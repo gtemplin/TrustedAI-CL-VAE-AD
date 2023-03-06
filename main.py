@@ -28,7 +28,9 @@ class FuzzyVAE(tf.keras.Model):
         self.beta = beta
         self.encoder_input_shape = input_shape
         self.latent_size = latent_size
-        self.encoder, self.latent_vector = self._build_encoder()
+        #self.initializer = tf.keras.initializers.RandomNormal(mean=0.0, stddev=1E-3)
+        #self.initializer = None
+        self.encoder = self._build_encoder()
         self.decoder = self._build_decoder()
 
 
@@ -36,32 +38,34 @@ class FuzzyVAE(tf.keras.Model):
 
         encoder_layers = [
             tf.keras.layers.Input(shape=self.encoder_input_shape),
-            tf.keras.layers.Conv2D(filters=32, kernel_size=3, strides=(2,2), padding='same'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.LeakyReLU(),
-            tf.keras.layers.Conv2D(filters=64, kernel_size=3, strides=(2,2), padding='same'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.LeakyReLU(),
+            tf.keras.layers.Conv2D(filters=32, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
+            #tf.keras.layers.BatchNormalization(),
+            #tf.keras.layers.LeakyReLU(),
+            tf.keras.layers.Conv2D(filters=64, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
+            #tf.keras.layers.BatchNormalization(),
+            #tf.keras.layers.LeakyReLU(),
             tf.keras.layers.Flatten(),
             tf.keras.layers.Dense(self.latent_size + self.latent_size),
         ]
-        return tf.keras.Sequential(encoder_layers), encoder_layers[-1]
+        return tf.keras.Sequential(encoder_layers, name='encoder')
     
     def _build_decoder(self):
+
         decoder_layers = [
             tf.keras.layers.Input(shape=(self.latent_size,)),
             tf.keras.layers.Dense(units=7*7*32, activation='relu'),
             tf.keras.layers.Reshape(target_shape=(7,7,32)),
-            tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.LeakyReLU(),
-            tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.LeakyReLU(),
+            tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same', activation='relu'),
+            #tf.keras.layers.BatchNormalization(),
+            #tf.keras.layers.LeakyReLU(),
+            tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same', activation='relu'),
+            #tf.keras.layers.BatchNormalization(),
+            #tf.keras.layers.LeakyReLU(),
             tf.keras.layers.Conv2DTranspose(filters=1, kernel_size=3, strides=1, padding='same'),
-            tf.keras.layers.BatchNormalization(),
+            #tf.keras.layers.BatchNormalization(),
+            #tf.keras.layers.Softmax(),
         ]
-        return tf.keras.Sequential(decoder_layers)
+        return tf.keras.Sequential(decoder_layers, name='decoder')
 
 
     @tf.function
@@ -74,16 +78,21 @@ class FuzzyVAE(tf.keras.Model):
         fuzz_x = x
         if training:
             fuzz_x += tf.random.normal(shape=x.shape, mean=0, stddev=self.beta)
+
         z = self.encoder(fuzz_x)
         mean, logvar = tf.split(z, num_or_size_splits=2, axis=1)
         return mean, logvar
     
     def reparameterize(self, mean, logvar):
         eps = tf.random.normal(shape=tf.shape(mean))
-        return eps + tf.exp(logvar * .5) + mean
+        #z = eps + tf.exp(logvar * .5) + mean
+        z = mean + (logvar * 0.5) + eps
+        return z
     
     def decode(self, z, apply_sigmoid=False):
+        #logits = tf.clip_by_value(self.decoder(z), 1E-10, 1E10)
         logits = self.decoder(z)
+
         if apply_sigmoid:
             probs = tf.sigmoid(logits)
             return probs
@@ -91,7 +100,7 @@ class FuzzyVAE(tf.keras.Model):
     
     def log_normal_pdf(self, sample, mean, logvar, raxis=1):
         log2pi = tf.math.log(2. * np.pi)
-        return tf.reduce_sum( -0.5 * ((sample - mean)**2. * tf.exp(-logvar) + logvar + log2pi), axis=raxis)
+        return tf.abs(tf.reduce_mean( -0.5 * (((sample - mean)**2.) * tf.exp(-logvar) + logvar + log2pi), axis=raxis))
     
     def call_detailed(self, x, training=False):
         mean, logvar = self.encode(x)
@@ -106,33 +115,50 @@ class FuzzyVAE(tf.keras.Model):
         return self.decode(z, True)
     
     def compute_loss(self, x, training=False):
+        #return self.compute_loss_old(x, training)
+        return self.compute_loss_new(x, training)
+
+    def compute_loss_new(self, x, training=False):
+        
         x_logit, z, mean, logvar = self.call_detailed(x, training)
 
-        #cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=x_logit, labels=x)
-        cross_entropy = tf.pow(x_logit - x, 2) # cross entropy blows up
+        mse = tf.reduce_mean(tf.pow(x - x_logit, 2))
+        mean_loss = tf.reduce_mean(tf.pow(mean, 2))
+        var_loss = tf.abs(1. - tf.reduce_mean(tf.pow(logvar, 2)))
+        z_kurtosis_loss = tf.abs(3 - tf.reduce_mean(tf.pow((z - tf.reduce_mean(z))/ tf.math.reduce_std(z), 4)))
 
-        logpx_z = -tf.reduce_sum(cross_entropy)
-        logpz = self.log_normal_pdf(z, 0., 0.)
-        logqz_x = self.log_normal_pdf(z, mean, logvar)
-
-        loss = -tf.reduce_mean(logpx_z + logpz - logqz_x)
-
-        try:
-            tf.debugging.assert_all_finite(loss, message='Loss NaN')
-            
-        except Exception as e:
-            print(f'NaN Detected: {e}')
-            print(tf.reduce_min(x_logit), tf.reduce_max(x_logit), x_logit.shape)
-            raise Exception(f"Min: {tf.reduce_min(x_logit)}, Max: {tf.reduce_max(x_logit)}, Shape: {x_logit.shape}")
+        loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 + z_kurtosis_loss
 
         return {
             'loss': loss,
-            'max': tf.reduce_max(x),
-            'min': tf.reduce_min(x),
+            'mse': mse,
+            'mean_loss': mean_loss,
+            'var_loss': var_loss,
+            'z_kurtosis_loss': z_kurtosis_loss,
+            'r_min': tf.reduce_min(x_logit),
+            'r_max': tf.reduce_max(x_logit),
+        }
+    
+    def compute_loss_old(self, x, training=False):
+        x_logit, z, mean, logvar = self.call_detailed(x, training)
+
+        cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=x_logit, labels=x)
+        #mse = tf.pow(x_logit - x, 2) # cross entropy blows up
+
+        logpx_z = tf.abs(tf.reduce_mean(cross_entropy))
+        logpz = self.log_normal_pdf(z, 0., 0.)
+        logqz_x = self.log_normal_pdf(z, mean, logvar)
+
+        loss = tf.abs(tf.reduce_mean(logpx_z + logpz - logqz_x))
+
+        return {
+            'loss': loss,
             'r_max': tf.reduce_max(x_logit),
             'r_min': tf.reduce_min(x_logit),
-            'mse': tf.reduce_mean(tf.math.pow(x_logit, 2)),
+            'logpx_z': logpx_z,
             'logvar': tf.reduce_sum(tf.exp(-logvar)),
+            'logpz': tf.reduce_sum(logpz),
+            'logqz_x': tf.reduce_sum(logqz_x),
         }
         
 
@@ -141,11 +167,16 @@ class FuzzyVAE(tf.keras.Model):
         with tf.GradientTape() as tape:
             loss = self.compute_loss(x, training=True)
 
-        self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
+        #self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
+        grads = tape.gradient(loss['loss'], self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         return loss
     
     def test_step(self, x):
-        return self.call(x, training=False)
+
+        loss = self.compute_loss(x, training=False)
+
+        return loss
 
 
 
@@ -153,10 +184,11 @@ class FuzzyVAE(tf.keras.Model):
 def get_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--latent-dim', '-l', type=int, default=64)
+    parser.add_argument('--latent-dim', '-d', type=int, default=128)
     parser.add_argument('--beta', type=float, default=1E-5)
     parser.add_argument('--batch-size', '-b', type=int, default=32)
     parser.add_argument('--max-epochs', '-e', type=int, default=10)
+    parser.add_argument('--learning-rate', '-l', type=float, default=1E-4)
     
     return parser.parse_args()
 
@@ -188,7 +220,7 @@ def build_model(args, data):
     vae = FuzzyVAE(input_shape=input_shape, latent_size = args.latent_dim, beta=args.beta)
 
     vae.compile(optimizer=tf.keras.optimizers.Adam(
-        learning_rate=1E-4
+        learning_rate=args.learning_rate
     ))
 
     #vae.build((None, ) + vae.encoder_input_shape)
@@ -204,8 +236,16 @@ def train_model(args, model:tf.keras.Model, data):
         tf.keras.callbacks.TensorBoard(log_dir=logdir)
     ]
 
-    model.fit(data['train'], batch_size=args.batch_size, callbacks=callbacks, shuffle=True, epochs=args.max_epochs)
-    return model    
+    try:
+        model.fit(data['train'], validation_data=data['test'], batch_size=args.batch_size, callbacks=callbacks, shuffle=True, epochs=args.max_epochs)
+    except KeyboardInterrupt:
+        print('Keyboard Interrupt')
+    
+    model.encoder.save(os.path.join(logdir, 'encoder'))
+    model.decoder.save(os.path.join(logdir, 'decoder'))
+    #model.save(os.path.join(logdir, 'model'))
+    
+    return model
 
 
 
