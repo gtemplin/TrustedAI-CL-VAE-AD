@@ -20,6 +20,18 @@ if gpu_list:
 print(f'TensorFlow Version: {tf.__version__}')
 print(f'Num of GPUs: {len(tf.config.list_physical_devices("GPU"))}')
 
+
+class BetaAnnealingCallback(tf.keras.callbacks.Callback):
+
+    def __init__(self, rate=0.98):
+        self.rate = rate
+        super(BetaAnnealingCallback, self).__init__()
+
+    def on_epoch_end(self, epoch, logs=None):
+        self.model.beta *= self.rate
+
+
+
 class FuzzyVAE(tf.keras.Model):
 
     def __init__(self, input_shape, latent_size, beta=1E-5):
@@ -83,8 +95,10 @@ class FuzzyVAE(tf.keras.Model):
         mean, logvar = tf.split(z, num_or_size_splits=2, axis=1)
         return mean, logvar
     
-    def reparameterize(self, mean, logvar):
-        eps = tf.random.normal(shape=tf.shape(mean))
+    def reparameterize(self, mean, logvar, training=False):
+        eps = tf.zeros(shape=tf.shape(mean))
+        if training:
+            eps = tf.random.normal(shape=tf.shape(mean))
         #z = eps + tf.exp(logvar * .5) + mean
         z = mean + (logvar * 0.5) + eps
         return z
@@ -104,14 +118,14 @@ class FuzzyVAE(tf.keras.Model):
     
     def call_detailed(self, x, training=False):
         mean, logvar = self.encode(x)
-        z = self.reparameterize(mean, logvar)
+        z = self.reparameterize(mean, logvar, training)
         x_logit = self.decode(z, True)
 
         return x_logit, z, mean, logvar
     
     def call(self, x, training=False):
         mean, logvar = self.encode(x, training=False)
-        z = self.reparameterize(mean, logvar)
+        z = self.reparameterize(mean, logvar, training)
         return self.decode(z, True)
     
     def compute_loss(self, x, training=False):
@@ -119,24 +133,35 @@ class FuzzyVAE(tf.keras.Model):
         return self.compute_loss_new(x, training)
 
     def compute_loss_new(self, x, training=False):
+
+        KURTOSIS_TARGET = 3.0
         
         x_logit, z, mean, logvar = self.call_detailed(x, training)
 
         mse = tf.reduce_mean(tf.pow(x - x_logit, 2))
-        mean_loss = tf.reduce_mean(tf.pow(mean, 2))
+        mean_loss = tf.pow(tf.reduce_mean(mean),2)
         var_loss = tf.abs(1. - tf.reduce_mean(tf.pow(logvar, 2)))
-        z_kurtosis_loss = tf.abs(3 - tf.reduce_mean(tf.pow((z - tf.reduce_mean(z))/ tf.math.reduce_std(z), 4)))
+
+        # Skewness - Balance around tails
+        z_skew_loss = tf.abs(tf.reduce_mean(tf.pow((z-tf.reduce_mean(z)) / tf.math.reduce_std(z), 3)))
+        # Kurtosis - Tailness of distribution (3=normal, 1.8=uniform)
+        z_kurtosis_loss = tf.abs(KURTOSIS_TARGET - tf.reduce_mean(tf.pow((z - tf.reduce_mean(z))/ tf.math.reduce_std(z), 4)))
+
+        kl_div_gaus = 0.5 * tf.abs(tf.reduce_sum(1. + tf.abs(logvar) - 2.*tf.abs(mean) - tf.exp(2.*tf.abs(logvar))))
 
         loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 + z_kurtosis_loss
+        #loss = mse + 5E-4*kl_div_gaus + mean_loss + var_loss + z_kurtosis_loss
 
         return {
             'loss': loss,
             'mse': mse,
             'mean_loss': mean_loss,
             'var_loss': var_loss,
+            'skew_loss': z_skew_loss,
             'z_kurtosis_loss': z_kurtosis_loss,
             'r_min': tf.reduce_min(x_logit),
             'r_max': tf.reduce_max(x_logit),
+            'kl_div': kl_div_gaus,
         }
     
     def compute_loss_old(self, x, training=False):
@@ -233,7 +258,8 @@ def train_model(args, model:tf.keras.Model, data):
 
     logdir = os.path.join('./logs', f'fit_{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}')
     callbacks = [
-        tf.keras.callbacks.TensorBoard(log_dir=logdir)
+        tf.keras.callbacks.TensorBoard(log_dir=logdir),
+        BetaAnnealingCallback(0.98),
     ]
 
     try:
@@ -250,6 +276,10 @@ def train_model(args, model:tf.keras.Model, data):
 
 
 def evaluate(model:tf.keras.Model, data):
+
+    #n = 10
+    #grid_x = np.linspace(0.0, 1.0, n)
+    #grid_y = np.linspace(0.0, 1.0, n)
     
     #test_loss = model.compute_loss(data['test'])
     y = model.predict(data['test'])
