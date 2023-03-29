@@ -6,6 +6,7 @@ import tensorflow_datasets as tfds
 import numpy as np
 import datetime
 import matplotlib.pyplot as plt
+import plotly.express as px
 
 gpu_list = tf.config.list_physical_devices('GPU')
 # Calling GPUs by default with Keras will reserve the rest of the remaining memory
@@ -119,9 +120,9 @@ class FuzzyVAE(tf.keras.Model):
     def call_detailed(self, x, training=False):
         mean, logvar = self.encode(x)
         z = self.reparameterize(mean, logvar, training)
-        x_logit = self.decode(z, True)
+        x_prob = self.decode(z, True)
 
-        return x_logit, z, mean, logvar
+        return x_prob, z, mean, logvar
     
     def call(self, x, training=False):
         mean, logvar = self.encode(x, training=False)
@@ -131,26 +132,54 @@ class FuzzyVAE(tf.keras.Model):
     def compute_loss(self, x, training=False):
         #return self.compute_loss_old(x, training)
         return self.compute_loss_new(x, training)
+    
+    def kl_divergence_gaussian(self, z_mean:tf.Tensor, z_logvar:tf.Tensor):
+        # kl_div_gaussian = 1/2 * sum(1 + log(sigma^2) - mue^2 - sigma^2)
+        return 0.5 * tf.reduce_sum(tf.abs(1. + z_logvar**2 - z_mean**2 - tf.exp(z_logvar**2)))
 
     def compute_loss_new(self, x, training=False):
 
         KURTOSIS_TARGET = 3.0
         
-        x_logit, z, mean, logvar = self.call_detailed(x, training)
+        # Get VAE Outputs
+        x_hat_prob, z, mean, logvar = self.call_detailed(x, training)
+        
+        # Calculate Entropy
+        x_logit = tf.math.log(tf.exp(x) / tf.reduce_sum(tf.exp(x)))
+        likelihood_cross_entropy = -tf.reduce_mean(x_hat_prob * x_logit)
 
-        mse = tf.reduce_mean(tf.pow(x - x_logit, 2))
-        mean_loss = tf.pow(tf.reduce_mean(mean),2)
-        var_loss = tf.abs(1. - tf.reduce_mean(tf.pow(logvar, 2)))
-
+        # Calculate Mean Squared Error
+        mse = tf.reduce_mean(tf.pow(x - x_hat_prob, 2))
+        
+        # Old Statistics Calculations
+        #mean_loss = tf.pow(tf.reduce_mean(mean),2)
+        #var_loss = tf.abs(1. - tf.reduce_mean(tf.pow(logvar, 2)))
+        
+        # Statistics
+        z_mean = tf.reduce_mean(z)
+        z_std = tf.math.reduce_std(z)
+        z_var = tf.math.reduce_variance(z)
+        z_score = (z - z_mean) / z_std
+        z_skew = tf.reduce_mean(tf.pow(z_score, 3))
+        z_kurtosis = tf.reduce_mean(tf.pow(z_score, 4))
+        
+        # Losses
+        
+        # Mean = 0
+        mean_loss = tf.pow(z_mean, 2)
+        # Var = 1
+        var_loss = tf.abs(1. - z_var)
         # Skewness - Balance around tails
-        z_skew_loss = tf.abs(tf.reduce_mean(tf.pow((z-tf.reduce_mean(z)) / tf.math.reduce_std(z), 3)))
+        z_skew_loss = tf.abs(z_skew)
         # Kurtosis - Tailness of distribution (3=normal, 1.8=uniform)
-        z_kurtosis_loss = tf.abs(KURTOSIS_TARGET - tf.reduce_mean(tf.pow((z - tf.reduce_mean(z))/ tf.math.reduce_std(z), 4)))
+        z_kurtosis_loss = tf.abs(KURTOSIS_TARGET - z_kurtosis)
 
-        kl_div_gaus = 0.5 * tf.abs(tf.reduce_sum(1. + tf.abs(logvar) - 2.*tf.abs(mean) - tf.exp(2.*tf.abs(logvar))))
+        # KL Divergence from Raw Encoder Output
+        kl_div_gaus = self.kl_divergence_gaussian(mean, logvar)
 
-        loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 + z_kurtosis_loss
-        #loss = mse + 5E-4*kl_div_gaus + mean_loss + var_loss + z_kurtosis_loss
+        #loss = mse
+        #loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 * z_kurtosis_loss
+        loss = mse + 1E-5 * kl_div_gaus
 
         return {
             'loss': loss,
@@ -159,8 +188,9 @@ class FuzzyVAE(tf.keras.Model):
             'var_loss': var_loss,
             'skew_loss': z_skew_loss,
             'z_kurtosis_loss': z_kurtosis_loss,
-            'r_min': tf.reduce_min(x_logit),
-            'r_max': tf.reduce_max(x_logit),
+            'r_min': tf.reduce_min(x_hat_prob),
+            'r_max': tf.reduce_max(x_hat_prob),
+            'cross_entropy': likelihood_cross_entropy,
             'kl_div': kl_div_gaus,
         }
     
@@ -277,29 +307,38 @@ def train_model(args, model:tf.keras.Model, data):
 
 def evaluate(model:tf.keras.Model, data):
 
-    #n = 10
-    #grid_x = np.linspace(0.0, 1.0, n)
-    #grid_y = np.linspace(0.0, 1.0, n)
+    n = 10
     
-    #test_loss = model.compute_loss(data['test'])
-    y = model.predict(data['test'])
-
-    x_i = list(data['test'].take(1).as_numpy_iterator())[0][0,:,:,0]
-    #x_i = data['test'][0, :, :, 0]
-    y_i = y[0, :, :, 0]
+    test_data = data['test'].unbatch()
+    x_i = np.array(list(test_data.take(n).as_numpy_iterator()))
+    y = model.predict(x_i)
+    
+    y_i = y / (np.max(y) - np.min(y))
+    
+    x_i = x_i[:,:,:,0]
+    y_i = y_i[:,:,:,0]
 
     print(x_i.shape)
     print(y_i.shape)
 
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(10,8))
-
-    ax0.imshow(x_i, cmap='gray')
-    ax0.set_title('Original')
-
-    ax1.imshow(y_i, cmap='gray')
-    ax1.set_title('Prediction')
-
-    plt.show()
+    #fig, ax_vec = plt.subplots(n, 2, figsize=(5,12))
+    #
+    #for i,ax_tuple,x, x_hat in zip(range(n),ax_vec, x_i, y_i):
+    #    ax_tuple[0].imshow(x, cmap='gray')
+    #    
+    #    ax_tuple[1].imshow(x_hat, cmap='gray')
+    #    
+    #    if i == 0:
+    #        ax_tuple[0].set_title('Original')
+    #        ax_tuple[1].set_title('Prediction')
+    #
+    #plt.show()
+    
+    fig_original = px.imshow(x_i, color_continuous_scale='gray', facet_col=0, facet_col_wrap=5)
+    fig_reconstruction = px.imshow(y_i, color_continuous_scale='gray', facet_col=0, facet_col_wrap=5)
+    
+    fig_original.show()
+    fig_reconstruction.show()
 
 
 def main():
