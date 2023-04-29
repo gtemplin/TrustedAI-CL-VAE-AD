@@ -41,8 +41,7 @@ class FuzzyVAE(tf.keras.Model):
         self.beta = beta
         self.encoder_input_shape = input_shape
         self.latent_size = latent_size
-        #self.initializer = tf.keras.initializers.RandomNormal(mean=0.0, stddev=1E-3)
-        #self.initializer = None
+        
         self.encoder = self._build_encoder()
         self.decoder = self._build_decoder()
 
@@ -52,11 +51,7 @@ class FuzzyVAE(tf.keras.Model):
         encoder_layers = [
             tf.keras.layers.Input(shape=self.encoder_input_shape),
             tf.keras.layers.Conv2D(filters=32, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
-            #tf.keras.layers.BatchNormalization(),
-            #tf.keras.layers.LeakyReLU(),
             tf.keras.layers.Conv2D(filters=64, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
-            #tf.keras.layers.BatchNormalization(),
-            #tf.keras.layers.LeakyReLU(),
             tf.keras.layers.Flatten(),
             tf.keras.layers.Dense(self.latent_size + self.latent_size),
         ]
@@ -69,14 +64,8 @@ class FuzzyVAE(tf.keras.Model):
             tf.keras.layers.Dense(units=7*7*32, activation='relu'),
             tf.keras.layers.Reshape(target_shape=(7,7,32)),
             tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same', activation='relu'),
-            #tf.keras.layers.BatchNormalization(),
-            #tf.keras.layers.LeakyReLU(),
             tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same', activation='relu'),
-            #tf.keras.layers.BatchNormalization(),
-            #tf.keras.layers.LeakyReLU(),
             tf.keras.layers.Conv2DTranspose(filters=1, kernel_size=3, strides=1, padding='same'),
-            #tf.keras.layers.BatchNormalization(),
-            #tf.keras.layers.Softmax(),
         ]
         return tf.keras.Sequential(decoder_layers, name='decoder')
 
@@ -100,12 +89,10 @@ class FuzzyVAE(tf.keras.Model):
         eps = tf.zeros(shape=tf.shape(mean))
         if training:
             eps = tf.random.normal(shape=tf.shape(mean))
-        #z = eps + tf.exp(logvar * .5) + mean
         z = mean + (logvar * 0.5) + eps
         return z
     
     def decode(self, z, apply_sigmoid=False):
-        #logits = tf.clip_by_value(self.decoder(z), 1E-10, 1E10)
         logits = self.decoder(z)
 
         if apply_sigmoid:
@@ -249,8 +236,8 @@ def get_args():
 
 def load_data(args):
 
-    train_ds, ds_info = tfds.load('emnist', split='train', shuffle_files=True, download=False, with_info=True)
-    test_ds = tfds.load('emnist', split='test', shuffle_files=True, download=False, with_info=False)
+    train_ds, ds_info = tfds.load('imagenet2012', split='train', shuffle_files=True, download=False, with_info=True)
+    test_ds = tfds.load('imagenet2012', split='validation', shuffle_files=True, download=False, with_info=False)
 
     train_ds = train_ds.batch(args.batch_size)
     test_ds = test_ds.batch(args.batch_size)
