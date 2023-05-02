@@ -45,6 +45,9 @@ class FuzzyVAE(tf.keras.Model):
         self.encoder = self._build_encoder()
         self.decoder = self._build_decoder()
 
+        self.encoder.summary()
+        self.decoder.summary()
+
 
     def _build_encoder(self):
 
@@ -61,11 +64,11 @@ class FuzzyVAE(tf.keras.Model):
 
         decoder_layers = [
             tf.keras.layers.Input(shape=(self.latent_size,)),
-            tf.keras.layers.Dense(units=7*7*32, activation='relu'),
-            tf.keras.layers.Reshape(target_shape=(7,7,32)),
+            tf.keras.layers.Dense(units=56*56*32, activation='relu'),
+            tf.keras.layers.Reshape(target_shape=(56,56,32)),
             tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same', activation='relu'),
             tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same', activation='relu'),
-            tf.keras.layers.Conv2DTranspose(filters=1, kernel_size=3, strides=1, padding='same'),
+            tf.keras.layers.Conv2DTranspose(filters=3, kernel_size=3, strides=1, padding='same'),
         ]
         return tf.keras.Sequential(decoder_layers, name='decoder')
 
@@ -164,9 +167,9 @@ class FuzzyVAE(tf.keras.Model):
         # KL Divergence from Raw Encoder Output
         kl_div_gaus = self.kl_divergence_gaussian(mean, logvar)
 
-        #loss = mse
+        loss = mse
         #loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 * z_kurtosis_loss
-        loss = mse + 1E-5 * kl_div_gaus
+        #loss = mse + 1E-5 * kl_div_gaus
 
         return {
             'loss': loss,
@@ -231,6 +234,7 @@ def get_args():
     parser.add_argument('--batch-size', '-b', type=int, default=32)
     parser.add_argument('--max-epochs', '-e', type=int, default=10)
     parser.add_argument('--learning-rate', '-l', type=float, default=1E-4)
+    parser.add_argument('--input-shape', '-n', type=int, default=224)
     
     return parser.parse_args()
 
@@ -239,14 +243,20 @@ def load_data(args):
     train_ds, ds_info = tfds.load('imagenet2012', split='train', shuffle_files=True, download=False, with_info=True)
     test_ds = tfds.load('imagenet2012', split='validation', shuffle_files=True, download=False, with_info=False)
 
-    train_ds = train_ds.batch(args.batch_size)
-    test_ds = test_ds.batch(args.batch_size)
-
     def normalize_img(element):
         return tf.cast(element['image'], tf.float32) / 255.
     
     train_ds = train_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
     test_ds = test_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
+
+    def resize_img(element, img_size):
+        return tf.image.resize(element, size=img_size)
+    
+    train_ds = train_ds.map(lambda x: resize_img(x, (args.input_shape, args.input_shape)), num_parallel_calls=tf.data.AUTOTUNE)
+    test_ds = test_ds.map(lambda x: resize_img(x, (args.input_shape, args.input_shape)), num_parallel_calls=tf.data.AUTOTUNE)
+
+    train_ds = train_ds.batch(args.batch_size)
+    test_ds = test_ds.batch(args.batch_size)
 
     print(f'Length of Training data: {len(train_ds)}')
 
@@ -258,7 +268,9 @@ def load_data(args):
 
 
 def build_model(args, data):
-    input_shape = data['info'].features['image'].shape
+    #input_shape = data['info'].features['image'].shape
+    input_shape = (args.input_shape, args.input_shape, 3)
+
     vae = FuzzyVAE(input_shape=input_shape, latent_size = args.latent_dim, beta=args.beta)
 
     vae.compile(optimizer=tf.keras.optimizers.Adam(
@@ -302,11 +314,14 @@ def evaluate(model:tf.keras.Model, data):
     
     y_i = y / (np.max(y) - np.min(y))
     
-    x_i = x_i[:,:,:,0]
-    y_i = y_i[:,:,:,0]
+    #x_i = x_i[:,:,:,0]
+    #y_i = y_i[:,:,:,0]
 
     print(x_i.shape)
     print(y_i.shape)
+
+    print(tf.reduce_max(x_i))
+    print(tf.reduce_max(y_i))
 
     #fig, ax_vec = plt.subplots(n, 2, figsize=(5,12))
     #
@@ -321,11 +336,13 @@ def evaluate(model:tf.keras.Model, data):
     #
     #plt.show()
     
-    fig_original = px.imshow(x_i, color_continuous_scale='gray', facet_col=0, facet_col_wrap=5)
-    fig_reconstruction = px.imshow(y_i, color_continuous_scale='gray', facet_col=0, facet_col_wrap=5)
+    fig_original = px.imshow(x_i, facet_col=0, facet_col_wrap=5)
+    fig_reconstruction = px.imshow(y_i, facet_col=0, facet_col_wrap=5)
     
-    fig_original.show()
-    fig_reconstruction.show()
+    print('Saving Original')
+    fig_original.write_image("original.png")
+    print('Saving Reconstruction')
+    fig_reconstruction.write_image("reconstruction.png")
 
 
 def main():
