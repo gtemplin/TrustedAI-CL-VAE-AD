@@ -5,6 +5,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 import numpy as np
 import datetime
+import yaml
 
 import matplotlib
 matplotlib.use('agg')
@@ -46,12 +47,22 @@ class BetaAnnealingCallback(tf.keras.callbacks.Callback):
 
 class FuzzyVAE(tf.keras.Model):
 
-    def __init__(self, input_shape, latent_size, beta=1E-5):
+    def __init__(self, config): #input_shape, latent_size, beta=1E-5):
         super().__init__()
 
-        self.beta = beta
-        self.encoder_input_shape = input_shape
-        self.latent_size = latent_size
+        self.config = config
+
+        self.beta = config['training']['beta']
+        self.encoder_input_shape = config['data']['image_size']
+        self.latent_size = config['model']['latent_dimensions']
+        
+        loss_config = config['loss']
+        self.kurtosis_target = float(loss_config['kurtosis'])
+        self.w_mse = float(loss_config['w_mse'])
+        self.w_kurtosis = float(loss_config['w_kurtosis'])
+        self.w_skew = float(loss_config['w_skew'])
+        self.w_kl_divergence = float(loss_config['w_kl_divergence'])
+        self.w_z_l1_reg = float(loss_config['w_z_l1_reg'])
         
         self.encoder = self._build_encoder()
         self.decoder = self._build_decoder()
@@ -64,27 +75,59 @@ class FuzzyVAE(tf.keras.Model):
 
         encoder_layers = [
             tf.keras.layers.Input(shape=self.encoder_input_shape),
-            tf.keras.layers.Conv2D(filters=32, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
-            tf.keras.layers.Conv2D(filters=64, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
-            #tf.keras.layers.Conv2D(filters=128, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
+        ]
+
+        for filters in self.config['model']['layers']:
+            encoder_layers.append(
+                tf.keras.layers.Conv2D(filters=filters, kernel_size=3, strides=(2,2), padding='same', activation='relu')
+            )
+
+            #tf.keras.layers.Conv2D(filters=32, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
+            #tf.keras.layers.Conv2D(filters=64, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
+            ##tf.keras.layers.Conv2D(filters=128, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
+        
+        encoder_layers.extend([
             tf.keras.layers.Flatten(),
             tf.keras.layers.Dense(self.latent_size + self.latent_size),
-        ]
+        ])
+
         return tf.keras.Sequential(encoder_layers, name='encoder')
     
     def _build_decoder(self):
 
+        image_size = self.config['data']['image_size']
+        image_width = image_size[0]
+        image_height = image_size[1]
+        output_channels = image_size[2]
+        layer_count = len(self.config['model']['layers'])
+
+        dense_width = int(float(image_width) / float(2**layer_count))
+        dense_height = int(float(image_height) / float(2**layer_count))
+        decoder_dense_filters = self.config['model']['decoder_dense_filters']
+
+        if dense_width == 0:
+            raise RuntimeError(f'Error: Build Decoder: Width Collapse: Too many layers, check configuration file: {image_width} -> {dense_width}: {layer_count} Layers')
+        if  dense_height == 0:
+            raise RuntimeError(f'Error: Build Decoder: Height Collapse: Too many layers, check configuration file: {image_height} -> {dense_height}: {layer_count} Layers')
+        
+        dense_units = dense_width * dense_height * decoder_dense_filters
+        dense_shape = (dense_width, dense_height, decoder_dense_filters)
+
         decoder_layers = [
             tf.keras.layers.Input(shape=(self.latent_size,)),
-            tf.keras.layers.Dense(units=56*56*32, activation='relu'),
-            tf.keras.layers.Reshape(target_shape=(56,56,32)),
-            #tf.keras.layers.Dense(units=28*28*32, activation='relu'),
-            #tf.keras.layers.Reshape(target_shape=(28,28,32)),
-            #tf.keras.layers.Conv2DTranspose(filters=128, kernel_size=3, strides=2, padding='same', activation='relu'),
-            tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same', activation='relu'),
-            tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same', activation='relu'),
-            tf.keras.layers.Conv2DTranspose(filters=3, kernel_size=3, strides=1, padding='same'),
+            tf.keras.layers.Dense(units=dense_units, activation='relu'),
+            tf.keras.layers.Reshape(target_shape=dense_shape),
         ]
+
+        for filters in self.config['model']['layers']:
+            decoder_layers.append(
+                tf.keras.layers.Conv2DTranspose(filters=filters, kernel_size=3, strides=2, padding='same', activation='relu')
+            )
+
+        decoder_layers.append(
+            tf.keras.layers.Conv2DTranspose(filters=output_channels, kernel_size=3, strides=1, padding='same')
+        )
+
         return tf.keras.Sequential(decoder_layers, name='decoder')
 
 
@@ -143,8 +186,6 @@ class FuzzyVAE(tf.keras.Model):
         return 0.5 * tf.reduce_sum(tf.abs(1. + z_logvar**2 - z_mean**2 - tf.exp(z_logvar**2)))
 
     def compute_loss_new(self, x, training=False):
-
-        KURTOSIS_TARGET = 1.8
         
         # Get VAE Outputs
         x_hat_prob, z, mean, logvar = self.call_detailed(x, training)
@@ -177,20 +218,25 @@ class FuzzyVAE(tf.keras.Model):
         # Skewness - Balance around tails
         z_skew_loss = tf.abs(z_skew)
         # Kurtosis - Tailness of distribution (3=normal, 1.8=uniform)
-        z_kurtosis_loss = tf.abs(KURTOSIS_TARGET - z_kurtosis)
+        z_kurtosis_loss = tf.abs(self.kurtosis_target - z_kurtosis)
 
         # KL Divergence from Raw Encoder Output
         kl_div_gaus = self.kl_divergence_gaussian(mean, logvar)
 
-        #loss = mse
-        loss = mse + 1E-5 * z_kurtosis_loss
-        #loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 * z_kurtosis_loss
-        #loss = mse + 1E-5 * kl_div_gaus
+        # Z L1 Regularization
+        z_l1_reg = tf.reduce_mean(tf.abs(z))
+
+        ##loss = mse
+        #loss = mse + 1E-5 * z_kurtosis_loss
+        ##loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 * z_kurtosis_loss
+        ##loss = mse + 1E-5 * kl_div_gaus
+
+        loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_kl_divergence * kl_div_gaus + self.w_z_l1_reg * z_l1_reg
 
         return {
             'loss': loss,
             'mse': mse,
-            'mean_loss': mean_loss,
+            'z_l1': z_l1_reg,
             'var_loss': var_loss,
             'skew_loss': z_skew_loss,
             'z_kurtosis_loss': z_kurtosis_loss,
@@ -245,52 +291,97 @@ class FuzzyVAE(tf.keras.Model):
 def get_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--latent-dim', '-d', type=int, default=128)
-    parser.add_argument('--beta', type=float, default=1E-5)
-    parser.add_argument('--batch-size', '-b', type=int, default=32)
-    parser.add_argument('--max-epochs', '-e', type=int, default=10)
-    parser.add_argument('--learning-rate', '-l', type=float, default=1E-4)
-    parser.add_argument('--input-shape', '-n', type=int, default=224)
+    #parser.add_argument('--latent-dim', '-d', type=int, default=128)
+    #parser.add_argument('--beta', type=float, default=1E-5)
+    #parser.add_argument('--batch-size', '-b', type=int, default=32)
+    #parser.add_argument('--max-epochs', '-e', type=int, default=10)
+    #parser.add_argument('--learning-rate', '-l', type=float, default=1E-4)
+    #parser.add_argument('--input-shape', '-n', type=int, default=224)
+
+    parser.add_argument('config_filename', type=str, help='YAML configuration file')
     
     return parser.parse_args()
 
-def load_data(args):
+def load_config(config_filename: str):
 
-    train_ds, ds_info = tfds.load('imagenet2012', split='train', shuffle_files=True, download=False, with_info=True)
-    test_ds = tfds.load('imagenet2012', split='validation', shuffle_files=True, download=False, with_info=False)
+    assert(os.path.exists(config_filename))
+    assert(os.path.isfile(config_filename))
+
+    # Load config file
+    config = None
+    try:
+        with open(config_filename, 'r') as ifile:
+            config = yaml.safe_load(ifile)
+
+    except IOError as e:
+        raise e
+    except yaml.YAMLError as e:
+        raise e
+    
+    # Assign and create logdir now
+    config['logdir'] =  os.path.join('./logs', f'fit_{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}')
+    if not os.path.exists(config['logdir']):
+        os.makedirs(config['logdir'])
+    else:
+        assert(os.path.isdir(config['logdir']))
+
+    # Save YAML config file to log directory
+    try:
+        log_config_filepath = os.path.join(config['logdir'], 'config.yml')
+        with open(log_config_filepath, 'w') as ofile:
+            yaml.safe_dump(config, ofile)
+    except IOError as e:
+        raise e
+    except yaml.YAMLError as e:
+        raise e
+
+    return config 
+    
+
+def load_data(config: dict):
+
+    data_config = config['data']
+    dataset_name = data_config['dataset']
+    train_split = data_config['train_split']
+    val_split = data_config['val_split']
+    img_size = data_config['image_size']
+    batch_size = config['training']['batch_size']
+
+    r_img_size = (img_size[0], img_size[1])
+
+    train_ds, ds_info = tfds.load(dataset_name, split=train_split, shuffle_files=True, download=False, with_info=True)
+    val_ds = tfds.load(dataset_name, split=val_split, shuffle_files=True, download=False, with_info=False)
 
     def normalize_img(element):
         return tf.cast(element['image'], tf.float32) / 255.
     
     train_ds = train_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-    test_ds = test_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
+    val_ds = val_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
 
     def resize_img(element, img_size):
         return tf.image.resize(element, size=img_size)
     
-    train_ds = train_ds.map(lambda x: resize_img(x, (args.input_shape, args.input_shape)), num_parallel_calls=tf.data.AUTOTUNE)
-    test_ds = test_ds.map(lambda x: resize_img(x, (args.input_shape, args.input_shape)), num_parallel_calls=tf.data.AUTOTUNE)
+    train_ds = train_ds.map(lambda x: resize_img(x, r_img_size), num_parallel_calls=tf.data.AUTOTUNE)
+    val_ds = val_ds.map(lambda x: resize_img(x, r_img_size), num_parallel_calls=tf.data.AUTOTUNE)
 
-    train_ds = train_ds.batch(args.batch_size)
-    test_ds = test_ds.batch(args.batch_size)
+    train_ds = train_ds.batch(batch_size)
+    val_ds = val_ds.batch(batch_size)
 
     print(f'Length of Training data: {len(train_ds)}')
 
     return {
         'train': train_ds,
-        'test': test_ds,
+        'val': val_ds,
         'info': ds_info,
     }
 
 
-def build_model(args, data):
-    #input_shape = data['info'].features['image'].shape
-    input_shape = (args.input_shape, args.input_shape, 3)
+def build_model(config: dict, data: tf.data.Dataset):
 
-    vae = FuzzyVAE(input_shape=input_shape, latent_size = args.latent_dim, beta=args.beta)
+    vae = FuzzyVAE(config)
 
     vae.compile(optimizer=tf.keras.optimizers.Adam(
-        learning_rate=args.learning_rate
+        learning_rate=float(config['training']['learning_rate'])
     ))
 
     #vae.build((None, ) + vae.encoder_input_shape)
@@ -299,17 +390,21 @@ def build_model(args, data):
     return vae
 
 
-def train_model(args, model:tf.keras.Model, data):
+def train_model(config, model:tf.keras.Model, data):
 
-    logdir = os.path.join('./logs', f'fit_{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}')
+    logdir = config['logdir']
+    beta = config['training']['beta']
+    batch_size = config['training']['batch_size']
+    max_epochs = config['training']['max_epochs']
+
     callbacks = [
         tf.keras.callbacks.TensorBoard(log_dir=logdir),
-        BetaAnnealingCallback(0.98),
+        BetaAnnealingCallback(beta),
         tf.keras.callbacks.LearningRateScheduler(learning_rate_schedule, verbose=True),
     ]
 
     try:
-        model.fit(data['train'], validation_data=data['test'], batch_size=args.batch_size, callbacks=callbacks, shuffle=True, epochs=args.max_epochs, use_multiprocessing=True, workers=8)
+        model.fit(data['train'], validation_data=data['val'], batch_size=batch_size, callbacks=callbacks, shuffle=True, epochs=max_epochs, use_multiprocessing=True, workers=8)
     except KeyboardInterrupt:
         print('Keyboard Interrupt')
     
@@ -321,13 +416,16 @@ def train_model(args, model:tf.keras.Model, data):
 
 
 
-def evaluate(model:tf.keras.Model, data):
+def evaluate(config: dict, model:tf.keras.Model, data):
+
+    logdir = config['logdir']
 
     n = 10
     
-    test_data = data['test'].unbatch()
+    test_data = data['val'].unbatch()
     x_i = np.array(list(test_data.take(n).as_numpy_iterator()))
     y = model.predict(x_i)
+    z = model.encode(x_i)
     
     y_i = (y - np.min(y)) / (np.max(y) - np.min(y))
     
@@ -357,22 +455,27 @@ def evaluate(model:tf.keras.Model, data):
     fig_reconstruction = px.imshow(np.round(255. * y_i), facet_col=0, facet_col_wrap=5)
     
     print('Saving Original')
-    fig_original.write_image("original.png")
+    fig_original.write_image(os.path.join(logdir, "original.png"))
     print('Saving Reconstruction')
-    fig_reconstruction.write_image("reconstruction.png")
+    fig_reconstruction.write_image(os.path.join(logdir, "reconstruction.png"))
     
     
+    print('Generating Image Histogram')
     fig, ax = plt.subplots(1, 1)
-    
     ax.hist(x_i.flatten(), bins=64, label='Original', alpha=0.65)
     ax.hist(y_i.flatten(), bins=64, label='Reconstruction', alpha=0.65)
     ax.grid()
     ax.legend()
-    ax.set_title('Flat Histogram')
+    ax.set_title('Flat Image Histogram')
+    fig.savefig(os.path.join(logdir, "output_histogram.png"))
 
-    fig.savefig("output_histogram.png")
+    print('Generating Latent Histogram')
+    fig, ax = plt.subplots(1, 1)
+    ax.hist(tf.reshape(z, [-1]), bins=64)
+    ax.grid()
+    ax.set_title('Latent Vector Histogram')
+    fig.savefig(os.path.join(logdir, "latent_histogram.png"))
     
-    #plt.show()
     
 
 
@@ -380,11 +483,12 @@ def main():
 
     
     args = get_args()
-
-    data = load_data(args)
-    model = build_model(args, data)
-    model = train_model(args, model, data)
-    evaluate(model, data)
+    
+    config = load_config(args.config_filename)
+    data = load_data(config)
+    model = build_model(config, data)
+    model = train_model(config, model, data)
+    evaluate(config, model, data)
 
 
 if __name__ == '__main__':
