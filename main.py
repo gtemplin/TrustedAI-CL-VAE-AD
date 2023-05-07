@@ -73,26 +73,27 @@ class FuzzyVAE(tf.keras.Model):
 
     def _build_encoder(self):
 
+        # Encoder Input
         encoder_layers = [
             tf.keras.layers.Input(shape=self.encoder_input_shape),
         ]
 
+        # Encoder Hidden Layers
         for filters in self.config['model']['layers']:
             encoder_layers.append(
                 tf.keras.layers.Conv2D(filters=filters, kernel_size=3, strides=(2,2), padding='same', activation='relu')
             )
-
-            #tf.keras.layers.Conv2D(filters=32, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
-            #tf.keras.layers.Conv2D(filters=64, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
-            ##tf.keras.layers.Conv2D(filters=128, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
         
+        # Encoder Latent Output
         encoder_layers.extend([
             tf.keras.layers.Flatten(),
             tf.keras.layers.Dense(self.latent_size + self.latent_size),
         ])
 
+        # Return Encoder
         return tf.keras.Sequential(encoder_layers, name='encoder')
     
+
     def _build_decoder(self):
 
         image_size = self.config['data']['image_size']
@@ -101,10 +102,12 @@ class FuzzyVAE(tf.keras.Model):
         output_channels = image_size[2]
         layer_count = len(self.config['model']['layers'])
 
+        # Calculate Dense Transformation
         dense_width = int(float(image_width) / float(2**layer_count))
         dense_height = int(float(image_height) / float(2**layer_count))
         decoder_dense_filters = self.config['model']['decoder_dense_filters']
 
+        # Error check dense vs image size vs layers
         if dense_width == 0:
             raise RuntimeError(f'Error: Build Decoder: Width Collapse: Too many layers, check configuration file: {image_width} -> {dense_width}: {layer_count} Layers')
         if  dense_height == 0:
@@ -113,21 +116,25 @@ class FuzzyVAE(tf.keras.Model):
         dense_units = dense_width * dense_height * decoder_dense_filters
         dense_shape = (dense_width, dense_height, decoder_dense_filters)
 
+        # Decoder Latent Input
         decoder_layers = [
             tf.keras.layers.Input(shape=(self.latent_size,)),
             tf.keras.layers.Dense(units=dense_units, activation='relu'),
             tf.keras.layers.Reshape(target_shape=dense_shape),
         ]
 
+        # Decoder Hidden Layers
         for filters in self.config['model']['layers']:
             decoder_layers.append(
                 tf.keras.layers.Conv2DTranspose(filters=filters, kernel_size=3, strides=2, padding='same', activation='relu')
             )
 
+        # Decoder Reconstruction Output
         decoder_layers.append(
             tf.keras.layers.Conv2DTranspose(filters=output_channels, kernel_size=3, strides=1, padding='same')
         )
 
+        # Return Decoder
         return tf.keras.Sequential(decoder_layers, name='decoder')
 
 
@@ -231,7 +238,8 @@ class FuzzyVAE(tf.keras.Model):
         ##loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 * z_kurtosis_loss
         ##loss = mse + 1E-5 * kl_div_gaus
 
-        loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_kl_divergence * kl_div_gaus + self.w_z_l1_reg * z_l1_reg
+        #loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_kl_divergence * kl_div_gaus + self.w_z_l1_reg * z_l1_reg
+        loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_z_l1_reg * z_l1_reg
 
         return {
             'loss': loss,
@@ -290,13 +298,6 @@ class FuzzyVAE(tf.keras.Model):
 
 def get_args():
     parser = argparse.ArgumentParser()
-
-    #parser.add_argument('--latent-dim', '-d', type=int, default=128)
-    #parser.add_argument('--beta', type=float, default=1E-5)
-    #parser.add_argument('--batch-size', '-b', type=int, default=32)
-    #parser.add_argument('--max-epochs', '-e', type=int, default=10)
-    #parser.add_argument('--learning-rate', '-l', type=float, default=1E-4)
-    #parser.add_argument('--input-shape', '-n', type=int, default=224)
 
     parser.add_argument('config_filename', type=str, help='YAML configuration file')
     
