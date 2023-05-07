@@ -5,6 +5,10 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 import numpy as np
 import datetime
+
+import matplotlib
+matplotlib.use('agg')
+
 import matplotlib.pyplot as plt
 import plotly.express as px
 
@@ -20,6 +24,13 @@ if gpu_list:
 
 print(f'TensorFlow Version: {tf.__version__}')
 print(f'Num of GPUs: {len(tf.config.list_physical_devices("GPU"))}')
+
+
+def learning_rate_schedule(epoch, lr):
+    if epoch < 10:
+        return lr
+    else:
+        return lr * tf.math.exp(-0.1)
 
 
 class BetaAnnealingCallback(tf.keras.callbacks.Callback):
@@ -55,6 +66,7 @@ class FuzzyVAE(tf.keras.Model):
             tf.keras.layers.Input(shape=self.encoder_input_shape),
             tf.keras.layers.Conv2D(filters=32, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
             tf.keras.layers.Conv2D(filters=64, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
+            #tf.keras.layers.Conv2D(filters=128, kernel_size=3, strides=(2,2), padding='same', activation='relu'),
             tf.keras.layers.Flatten(),
             tf.keras.layers.Dense(self.latent_size + self.latent_size),
         ]
@@ -66,6 +78,9 @@ class FuzzyVAE(tf.keras.Model):
             tf.keras.layers.Input(shape=(self.latent_size,)),
             tf.keras.layers.Dense(units=56*56*32, activation='relu'),
             tf.keras.layers.Reshape(target_shape=(56,56,32)),
+            #tf.keras.layers.Dense(units=28*28*32, activation='relu'),
+            #tf.keras.layers.Reshape(target_shape=(28,28,32)),
+            #tf.keras.layers.Conv2DTranspose(filters=128, kernel_size=3, strides=2, padding='same', activation='relu'),
             tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same', activation='relu'),
             tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same', activation='relu'),
             tf.keras.layers.Conv2DTranspose(filters=3, kernel_size=3, strides=1, padding='same'),
@@ -129,7 +144,7 @@ class FuzzyVAE(tf.keras.Model):
 
     def compute_loss_new(self, x, training=False):
 
-        KURTOSIS_TARGET = 3.0
+        KURTOSIS_TARGET = 1.8
         
         # Get VAE Outputs
         x_hat_prob, z, mean, logvar = self.call_detailed(x, training)
@@ -167,7 +182,8 @@ class FuzzyVAE(tf.keras.Model):
         # KL Divergence from Raw Encoder Output
         kl_div_gaus = self.kl_divergence_gaussian(mean, logvar)
 
-        loss = mse
+        #loss = mse
+        loss = mse + 1E-5 * z_kurtosis_loss
         #loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 * z_kurtosis_loss
         #loss = mse + 1E-5 * kl_div_gaus
 
@@ -289,10 +305,11 @@ def train_model(args, model:tf.keras.Model, data):
     callbacks = [
         tf.keras.callbacks.TensorBoard(log_dir=logdir),
         BetaAnnealingCallback(0.98),
+        tf.keras.callbacks.LearningRateScheduler(learning_rate_schedule, verbose=True),
     ]
 
     try:
-        model.fit(data['train'], validation_data=data['test'], batch_size=args.batch_size, callbacks=callbacks, shuffle=True, epochs=args.max_epochs)
+        model.fit(data['train'], validation_data=data['test'], batch_size=args.batch_size, callbacks=callbacks, shuffle=True, epochs=args.max_epochs, use_multiprocessing=True, workers=8)
     except KeyboardInterrupt:
         print('Keyboard Interrupt')
     
@@ -312,7 +329,7 @@ def evaluate(model:tf.keras.Model, data):
     x_i = np.array(list(test_data.take(n).as_numpy_iterator()))
     y = model.predict(x_i)
     
-    y_i = y / (np.max(y) - np.min(y))
+    y_i = (y - np.min(y)) / (np.max(y) - np.min(y))
     
     #x_i = x_i[:,:,:,0]
     #y_i = y_i[:,:,:,0]
@@ -336,13 +353,27 @@ def evaluate(model:tf.keras.Model, data):
     #
     #plt.show()
     
-    fig_original = px.imshow(x_i, facet_col=0, facet_col_wrap=5)
-    fig_reconstruction = px.imshow(y_i, facet_col=0, facet_col_wrap=5)
+    fig_original = px.imshow(np.round(255. * x_i), facet_col=0, facet_col_wrap=5)
+    fig_reconstruction = px.imshow(np.round(255. * y_i), facet_col=0, facet_col_wrap=5)
     
     print('Saving Original')
     fig_original.write_image("original.png")
     print('Saving Reconstruction')
     fig_reconstruction.write_image("reconstruction.png")
+    
+    
+    fig, ax = plt.subplots(1, 1)
+    
+    ax.hist(x_i.flatten(), bins=64, label='Original', alpha=0.65)
+    ax.hist(y_i.flatten(), bins=64, label='Reconstruction', alpha=0.65)
+    ax.grid()
+    ax.legend()
+    ax.set_title('Flat Histogram')
+
+    fig.savefig("output_histogram.png")
+    
+    #plt.show()
+    
 
 
 def main():
