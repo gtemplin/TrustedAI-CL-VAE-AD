@@ -18,7 +18,7 @@ data:
 training:
   beta: 0.98
   learning_rate: 1E-4
-  batch_size: 512
+  batch_size: 256
   max_epochs: 10
 
 model:
