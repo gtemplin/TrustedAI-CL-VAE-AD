@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import tensorflow as tf
 
 class FuzzyVAE(tf.keras.Model):
@@ -93,6 +94,20 @@ class FuzzyVAE(tf.keras.Model):
 
         # Return Decoder
         return tf.keras.Sequential(decoder_layers, name='decoder')
+    
+    
+    def load_model(self, model_path):
+        assert(os.path.exists(model_path))
+        assert(os.path.isdir(model_path))
+
+        encoder_path = os.path.join(model_path, 'encoder')
+        assert(os.path.exists(encoder_path))
+
+        decoder_path = os.path.join(model_path, 'decoder')
+        assert(os.path.exists(decoder_path))
+
+        self.encoder = tf.keras.models.load_model(encoder_path)
+        self.decoder = tf.keras.models.load_model(decoder_path)
 
 
     @tf.function
