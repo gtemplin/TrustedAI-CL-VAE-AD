@@ -81,7 +81,7 @@ class FuzzyVAE(tf.keras.Model):
         ]
 
         # Decoder Hidden Layers
-        for filters in self.config['model']['layers']:
+        for filters in reversed(self.config['model']['layers']):
             decoder_layers.append(
                 tf.keras.layers.Conv2DTranspose(filters=filters, kernel_size=3, strides=2, padding='same', activation='relu')
             )
