@@ -13,7 +13,7 @@ matplotlib.use('agg')
 import matplotlib.pyplot as plt
 import plotly.express as px
 
-from fuzzy_vae import FuzzyVAE
+from src.fuzzy_vae import FuzzyVAE
 
 gpu_list = tf.config.list_physical_devices('GPU')
 # Calling GPUs by default with Keras will reserve the rest of the remaining memory
