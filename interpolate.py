@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse, os, sys
+import yaml
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from train import load_config
 from src.fuzzy_vae import FuzzyVAE
 
 import tensorflow as tf
@@ -32,6 +32,25 @@ def get_args():
     parser.add_argument('--output-path', '-o', type=str, default='interpolate_output.png')
     return parser.parse_args()
 
+def load_config(config_filename: str):
+
+    assert(os.path.exists(config_filename))
+    assert(os.path.isfile(config_filename))
+
+    # Load config file
+    config = None
+    try:
+        with open(config_filename, 'r') as ifile:
+            config = yaml.safe_load(ifile)
+
+    except IOError as e:
+        raise e
+    except yaml.YAMLError as e:
+        raise e
+
+    return config 
+
+
 def load_model(log_dir: str):
 
     assert(os.path.exists(log_dir))
@@ -49,7 +68,7 @@ def load_model(log_dir: str):
 def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sample_points:int=10):
 
     dataset_name = config['data']['dataset']
-    val_split = config['data']['val_split']
+    val_split = config['data']['train_split']
     config_img_size = config['data']['image_size']
     img_size = (config_img_size[0], config_img_size[1])
 
@@ -64,9 +83,9 @@ def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sampl
     data = data.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
     data = data.map(lambda x: resize_img(x, img_size), num_parallel_calls=tf.data.AUTOTUNE)
 
-    data = tf.convert_to_tensor([d for d in data.take(2)])
+    data = tf.convert_to_tensor([d for d in data.shuffle(2).take(2)])
 
-    t_vec = np.arange(k_sample_points+1)
+    t_vec = np.arange(k_sample_points)
 
     _, zvec, _, _ = model.call_detailed(data)
     #_, z1, _, _ = model.call_detailed(data[1])
@@ -87,7 +106,6 @@ def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sampl
     for img, ax in zip(r_vec, ax_vec):
         ax.imshow(img)
         ax.axis('off')
-        print(np.min(img), np.max(img))
 
     fig.savefig(output_path, bbox_inches='tight')
 
