@@ -2,6 +2,7 @@
 
 import argparse, os, sys
 import yaml
+import time
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -67,12 +68,16 @@ def load_model(log_dir: str):
 
 def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sample_points:int=10):
 
+    N = 10
+
+    tf.random.set_seed(42)
+
     dataset_name = config['data']['dataset']
     val_split = config['data']['train_split']
     config_img_size = config['data']['image_size']
     img_size = (config_img_size[0], config_img_size[1])
 
-    data = tfds.load(dataset_name, split=val_split, shuffle_files=True)
+    data = tfds.load(dataset_name, split=val_split, shuffle_files=False)
 
     def normalize_img(element):
         return tf.cast(element['image'], tf.float32) / 255.
@@ -83,29 +88,38 @@ def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sampl
     data = data.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
     data = data.map(lambda x: resize_img(x, img_size), num_parallel_calls=tf.data.AUTOTUNE)
 
-    data = tf.convert_to_tensor([d for d in data.shuffle(2).take(2)])
+    data = tf.convert_to_tensor([d for d in data.take(N*2)])
 
     t_vec = np.arange(k_sample_points)
 
     _, zvec, _, _ = model.call_detailed(data)
-    #_, z1, _, _ = model.call_detailed(data[1])
 
-    z0 = zvec[0]
-    z1 = zvec[1]
+    z0 = zvec[:N]
+    z1 = zvec[N:]
 
     z_delta = (z1 - z0) / k_sample_points
 
     r_vec = list()
     for t in t_vec:
-        z = tf.reshape(z_delta * t + z0, shape=(1, -1))
-        r_vec.append(model.decode(z, True)[0])
+        z = tf.reshape(z_delta * t + z0, shape=(N, -1))
+        r_vec.append(model.decode(z, True))
 
-    fig, ax_vec = plt.subplots(1, len(r_vec)+2)
-    r_vec = [data[0]] + r_vec + [data[1]]
+    r_vec = tf.convert_to_tensor([data[:N]] + r_vec + [data[N:]])
 
-    for img, ax in zip(r_vec, ax_vec):
-        ax.imshow(img)
-        ax.axis('off')
+    fig, ax_vec = plt.subplots(N, len(r_vec))
+
+    for row in range(N):
+        for col in range(len(r_vec)):
+            ax_vec[row][col].imshow(r_vec[col,row,:,:,:])
+            ax_vec[row][col].axis('off')
+
+    title_font_size=8
+
+    ax_vec[0][0].set_title('X0', fontsize=title_font_size)
+    ax_vec[0][-1].set_title('X1', fontsize=title_font_size)
+
+    for i in range(len(ax_vec[0])-2):
+        ax_vec[0][i+1].set_title(f't{i}', fontsize=title_font_size)
 
     fig.savefig(output_path, bbox_inches='tight')
 
