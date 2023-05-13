@@ -144,14 +144,14 @@ def build_model(config: dict, data: tf.data.Dataset):
 def train_model(config, model:tf.keras.Model, data):
 
     logdir = config['logdir']
-    beta = config['training']['beta']
-    batch_size = config['training']['batch_size']
-    max_epochs = config['training']['max_epochs']
+    #beta = float(config['training']['beta'])
+    batch_size = int(config['training']['batch_size'])
+    max_epochs = int(config['training']['max_epochs'])
 
     callbacks = [
         tf.keras.callbacks.TensorBoard(log_dir=logdir),
-        BetaAnnealingCallback(beta),
-        tf.keras.callbacks.LearningRateScheduler(learning_rate_schedule, verbose=True),
+        BetaAnnealingCallback(),
+        #tf.keras.callbacks.LearningRateScheduler(learning_rate_schedule, verbose=True),
     ]
 
     try:
