@@ -1,7 +1,7 @@
 loss:
   w_mse: 1.
   kurtosis: 1.8
-  w_kurtosis: 1E-5
+  w_kurtosis: 1E-4
   w_skew: 0.0
   w_kl_divergence: 0.0
   w_z_l1_reg: 0.0
