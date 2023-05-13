@@ -10,7 +10,7 @@ class FuzzyVAE(tf.keras.Model):
 
         self.config = config
 
-        self.beta = config['training']['beta']
+        self.beta = float(config['training']['beta'])
         self.encoder_input_shape = config['data']['image_size']
         self.latent_size = config['model']['latent_dimensions']
         
@@ -210,7 +210,6 @@ class FuzzyVAE(tf.keras.Model):
         ##loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 * z_kurtosis_loss
         ##loss = mse + 1E-5 * kl_div_gaus
 
-        #loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_kl_divergence * kl_div_gaus + self.w_z_l1_reg * z_l1_reg
         loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_z_l1_reg * z_l1_reg
 
         return {
