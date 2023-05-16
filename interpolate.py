@@ -72,20 +72,36 @@ def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sampl
 
     tf.random.set_seed(42)
 
-    dataset_name = config['data']['dataset']
+    dataset_path = config['data'].get('dataset_path')
+    dataset_name = config['data'].get('dataset')
     val_split = config['data']['train_split']
     config_img_size = config['data']['image_size']
     img_size = (config_img_size[0], config_img_size[1])
 
-    data = tfds.load(dataset_name, split=val_split, shuffle_files=False)
+    if dataset_path is not None:
+        print(f'Loading dataset from: {dataset_path}')
+        assert(os.path.exists(dataset_path))
+        
+        ds = tf.data.Dataset.load(dataset_path)
 
-    def normalize_img(element):
-        return tf.cast(element['image'], tf.float32) / 255.
+        val_ds = ds.map(lambda x: x[val_split])
+
+        def normalize_img(element):
+            return tf.cast(element, tf.float32) / 255.
+        
+        data = val_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
+
+    else:
+        data = tfds.load(dataset_name, split=val_split, shuffle_files=False)
+
+        def normalize_img(element):
+            return tf.cast(element['image'], tf.float32) / 255.
+        
+        data = data.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
     
     def resize_img(element, img_size):
         return tf.image.resize(element, size=img_size)
     
-    data = data.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
     data = data.map(lambda x: resize_img(x, img_size), num_parallel_calls=tf.data.AUTOTUNE)
 
     data = tf.convert_to_tensor([d for d in data.take(N*2)])
