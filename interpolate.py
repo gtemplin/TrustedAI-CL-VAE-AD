@@ -74,25 +74,25 @@ def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sampl
 
     dataset_path = config['data'].get('dataset_path')
     dataset_name = config['data'].get('dataset')
-    val_split = config['data']['train_split']
+    train_split = config['data']['train_split']
     config_img_size = config['data']['image_size']
     img_size = (config_img_size[0], config_img_size[1])
 
     if dataset_path is not None:
         print(f'Loading dataset from: {dataset_path}')
         assert(os.path.exists(dataset_path))
-        
-        ds = tf.data.Dataset.load(dataset_path)
+        assert(os.path.isdir(dataset_path))
 
-        val_ds = ds.map(lambda x: x[val_split])
+        train_ds = tf.data.Dataset.load(os.path.join(dataset_path, 'train'))
+        val_ds = tf.data.Dataset.load(os.path.join(dataset_path, 'validation'))
 
         def normalize_img(element):
-            return tf.cast(element, tf.float32) / 255.
+            return tf.cast(element['image'], tf.float32) / 255.
         
         data = val_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
 
     else:
-        data = tfds.load(dataset_name, split=val_split, shuffle_files=False)
+        data = tfds.load(dataset_name, split=train_split, shuffle_files=False)
 
         def normalize_img(element):
             return tf.cast(element['image'], tf.float32) / 255.

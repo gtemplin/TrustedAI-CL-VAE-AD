@@ -73,14 +73,13 @@ def load_data(config: dict):
     if dataset_path is not None:
         print(f'Loading dataset from: {dataset_path}')
         assert(os.path.exists(dataset_path))
+        assert(os.path.isdir(dataset_path))
         
-        ds = tf.data.Dataset.load(dataset_path)
-
-        train_ds = ds.map(lambda x: x[train_split])
-        val_ds = ds.map(lambda x: x[val_split])
+        train_ds = tf.data.Dataset.load(os.path.join(dataset_path, 'train'))
+        val_ds = tf.data.Dataset.load(os.path.join(dataset_path, 'validation'))
 
         def normalize_img(element):
-            return tf.cast(element, tf.float32) / 255.
+            return tf.cast(element['image'], tf.float32) / 255.
         
         train_data = train_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
         val_data = val_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
