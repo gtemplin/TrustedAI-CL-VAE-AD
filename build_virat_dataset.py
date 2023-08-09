@@ -8,7 +8,12 @@ from collections import defaultdict
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from copy import deepcopy
+from multiprocessing import Pool
+from itertools import repeat
+
 import tensorflow as tf
+import tensorflow_datasets as tfds
 
 gpu_list = tf.config.list_physical_devices('GPU')
 # Calling GPUs by default with Keras will reserve the rest of the remaining memory
@@ -89,7 +94,7 @@ def load_meta_data(virat_directory: str):
     return meta
 
 
-def get_event_annotations(event_path: str):
+def get_event_annotations_from_file(event_path: str):
 
     if event_path is None:
         return None
@@ -118,7 +123,7 @@ def get_event_annotations(event_path: str):
     return event_list
 
 
-def get_mapping_annotations(mapping_path: str):
+def get_mapping_annotations_from_file(mapping_path: str):
 
     if mapping_path is None:
         return None
@@ -144,7 +149,7 @@ def get_mapping_annotations(mapping_path: str):
     return mapping_list
 
 
-def get_object_annotations(objects_path: str):
+def get_object_annotations_from_file(objects_path: str):
 
     if objects_path is None:
         return None
@@ -176,9 +181,9 @@ def parse_annotations(meta_data:dict):
     annotations = {}
 
     for basename, obj in tqdm.tqdm(meta_data.items(), desc='Grabbing annotations'):
-        event_annotations = get_event_annotations(obj['events_path'])
-        mapping_annotations = get_mapping_annotations(obj['mapping_path'])
-        object_annotations = get_object_annotations(obj['objects_path'])
+        event_annotations = get_event_annotations_from_file(obj['events_path'])
+        mapping_annotations = get_mapping_annotations_from_file(obj['mapping_path'])
+        object_annotations = get_object_annotations_from_file(obj['objects_path'])
 
         annotations[basename] = {
             'events': event_annotations,
@@ -189,21 +194,8 @@ def parse_annotations(meta_data:dict):
     return annotations
 
 
-def flatten_frames_and_annotations(basename: str, meta_data: dict, annotations: dict, batchsize: int):
-
-    meta_data_entry = meta_data[basename]
-    annotations_entry = annotations[basename]
-
-    video_path = meta_data_entry.get('video_path')
-
-    if video_path is None:
-        return None
-    if not os.path.exists(video_path):
-        return None
-    if not os.path.isfile(video_path):
-        return None
+def parse_video_name_data(basename: str):
     
-    # Get Group/Scene/Sequence/Segment/Time Meta from Filename
     basename_segments = basename.split('_')
     group_id = None
     scene_id = None
@@ -223,15 +215,123 @@ def flatten_frames_and_annotations(basename: str, meta_data: dict, annotations: 
         start_seconds = int(basename_segments[4])
         end_seconds = int(basename_segments[5])
 
-    # Get Event Frame/Index Map
+    return {
+        'basename': basename,
+        'group_id': group_id,
+        'scene_id': scene_id,
+        'sequence_id': sequence_id,
+        'segment_id': segment_id,
+        'start_seconds': start_seconds,
+        'end_seconds': end_seconds,
+    }
+
+
+def build_event_frame_map(annotations_entry: dict):
     event_frame_map = defaultdict(list)
-    for idx, event_entry in enumerate(annotations_entry['events']):
-        event_frame_map[event_entry['current_frame']].append(idx)
+    if annotations_entry.get('events') is not None:
+        for idx, event_entry in enumerate(annotations_entry['events']):
+            event_frame_map[event_entry['current_frame']].append(idx)
+    return event_frame_map
+
+
+def build_object_frame_map(annotations_entry: dict):
+    obj_frame_map = defaultdict(list)
+    if annotations_entry.get('objects') is not None:
+        for idx, obj_entry in enumerate(annotations_entry['objects']):
+            obj_frame_map[obj_entry['current_frame']].append(idx)
+    return obj_frame_map
+
+
+def serialize_frame_events(frame_id: int, event_frame_map: dict, annotations_entry: dict):
+    event_labels = list()
+    if event_frame_map.get(frame_id) is not None:
+        for event_entry_idx in event_frame_map.get(frame_id):
+            event_labels.append(annotations_entry['events'][event_entry_idx])
+    
+    event_features = {}
+    if len(event_labels) > 0:
+        for key in event_labels[0].keys():
+            event_features[key] = tf.train.Feature(int64_list=tf.train.Int64List(value=[
+                event_row[key] for event_row in event_labels
+            ]))
+    return tf.train.Features(feature=event_features).SerializeToString()
+
+
+def serialize_frame_objects(frame_id: int, obj_frame_map: dict, annotations_entry: dict):
+    object_labels = list()
+    if obj_frame_map.get(frame_id) is not None:
+        for object_entry_idx in obj_frame_map.get(frame_id):
+            object_labels.append(annotations_entry['objects'][object_entry_idx])
+
+    obj_features = {}
+    if len(object_labels) > 0:
+        for key in object_labels[0].keys():
+            obj_features[key] = tf.train.Feature(int64_list=tf.train.Int64List(value=[
+                obj_row[key] for obj_row in object_labels
+            ]))
+    return tf.train.Features(feature=obj_features).SerializeToString()
+
+
+def _to_bytelist(feature):
+    if feature is None:
+        return tf.train.Feature(bytes_list=tf.train.BytesList(value=[]))
+    else:
+        return tf.train.Feature(bytes_list=tf.train.BytesList(value=[feature]))
+def _to_floatlist(feature):
+    if feature is None:
+        return tf.train.Feature(float_list=tf.train.FloatList(value=[]))
+    else:
+        return tf.train.Feature(float_list=tf.train.FloatList(value=[feature]))
+def _to_int64list(feature):
+    if feature is None:
+        return tf.train.Feature(int64_list=tf.train.Int64List(value=[]))
+    else:
+        return tf.train.Feature(int64_list=tf.train.Int64List(value=[feature]))
+    
+def serialize_complete_frame(frame_id: int, video_name_data: dict, event_frame_map: dict, obj_frame_map: dict, annotations_entry: dict):
+    
+    # Serialize Event Features
+    event_features = serialize_frame_events(frame_id, event_frame_map, annotations_entry)
+
+    # Serialize Object Features
+    obj_features = serialize_frame_objects(frame_id, obj_frame_map, annotations_entry)
+
+    return tf.train.Example(features=tf.train.Features(feature={
+        #"image": _to_bytelist(frame.tobytes()),
+        "basename": _to_bytelist(video_name_data['basename'].encode("utf-8")),
+        "group_id": _to_int64list(video_name_data['group_id']),
+        "scene_id": _to_int64list(video_name_data['scene_id']),
+        "sequence_id": _to_int64list(video_name_data['sequence_id']),
+        "segment_id": _to_int64list(video_name_data['segment_id']),
+        "start_seconds": _to_int64list(video_name_data['start_seconds']),
+        "end_seconds": _to_int64list(video_name_data['end_seconds']),
+        "events": _to_bytelist(event_features),
+        "objects": _to_bytelist(feature=obj_features),
+    })).SerializeToString()
+    
+
+def flatten_frames_and_annotations(ofile: tf.io.TFRecordWriter, basename: str, meta_data: dict, annotations: dict):
+
+    meta_data_entry = meta_data[basename]
+    annotations_entry = annotations[basename]
+
+    video_path = meta_data_entry.get('video_path')
+
+    if video_path is None:
+        return None
+    if not os.path.exists(video_path):
+        return None
+    if not os.path.isfile(video_path):
+        return None
+    
+    # Get Group/Scene/Sequence/Segment/Time Meta from Filename
+    video_name_data = parse_video_name_data(basename)
+
+    # Get Event Frame/Index Map
+    event_frame_map = build_event_frame_map(annotations_entry)
 
     # Get Ojbect Frame/Index Map
-    obj_frame_map = defaultdict(list)
-    for idx, obj_entry in enumerate(annotations_entry['objects']):
-        obj_frame_map[obj_entry['current_frame']].append(idx)
+    obj_frame_map = build_object_frame_map(annotations_entry)
 
     # Load video file
     cap = cv2.VideoCapture(video_path)
@@ -240,58 +340,70 @@ def flatten_frames_and_annotations(basename: str, meta_data: dict, annotations: 
         print(f'Failed to open video: {video_path}')
         return None
     
-    frames_tf = None
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     progress_bar = tqdm.tqdm(None, desc=f'Loading Frames: {basename}', total=total_frames)
 
+    records = list()
+
     frame_id = 0
     while cap.isOpened():
+
+        # Get Frames
         ret, frame = cap.read()
-        
         if ret == 0:
             break
+        #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        if frames_tf is None:
-            frames_tf = tf.convert_to_tensor([frame], dtype=tf.uint8)
-        else:
-            frames_tf = tf.concat((frames_tf, tf.convert_to_tensor([frame], dtype=tf.uint8)), 0)
+        record_bytes = serialize_complete_frame(frame_id, video_name_data, event_frame_map, obj_frame_map, annotations_entry)
+        ofile.write(record_bytes)
+        #records.append(deepcopy(record_bytes))
 
         progress_bar.update()
-
         frame_id += 1
-
-    print(frames_tf.shape)
 
     progress_bar.close()
     if cap.isOpened():
         cap.release()
     
-
-    exit()
+    #return records
     
 
+def restructure_tf_dataset(tf_dataset:tf.data.TFRecordDataset):
+
+    print(tf_dataset)
+
+    for row in tf_dataset:
+        example = tf.train.Example()
+        example.ParseFromString(row.numpy())
+        print(example)
+
+    return tf_dataset
 
 
+def conjunction_of_spheres(meta_data: dict, annotations: dict, output_path: str):
+    
+    buffer_file = os.path.join(os.path.dirname(output_path), 'buffer.tfrecord')
+    assert(not os.path.exists(buffer_file))
 
-def conjunction_of_spheres(meta_data: dict, annotations: dict, batchsize):
+    try:
+        with tf.io.TFRecordWriter(buffer_file) as ofile:
+            for basename in tqdm.tqdm(meta_data.keys(), desc='Joining frames/anns'):
+                flatten_frames_and_annotations(ofile, basename, meta_data, annotations)
 
-    for basename in tqdm.tqdm(meta_data.keys(), desc='Joining frames/anns'):
-        r = flatten_frames_and_annotations(basename, meta_data, annotations, batchsize)
+        tf_dataset = tf.data.TFRecordDataset([buffer_file])
+        #tf_dataset = restructure_tf_dataset(tf_dataset)
+        tf_dataset.save(output_path)
+    finally:
+        os.remove(buffer_file)
 
 
-        
+    return tf_dataset
 
 
-def create_tf_dataset(meta_data: dict, batchsize=32):
+def create_tf_dataset(meta_data: dict, output_path: str):
     
     annotations = parse_annotations(meta_data)
-    return conjunction_of_spheres(meta_data, annotations, batchsize)
-
-
-def save_dataset(tf_dataset: tf.data.Dataset, output_path: str):
-    pass
+    return conjunction_of_spheres(meta_data, annotations, output_path)
 
 
 
@@ -299,8 +411,7 @@ def main():
 
     args = get_args()
     meta_data = load_meta_data(args.virat_directory)
-    tf_dataset = create_tf_dataset(meta_data, args.batchsize)
-    save_dataset(tf_dataset, args.output_path)
+    tf_dataset = create_tf_dataset(meta_data, args.output_path)
 
 
 
