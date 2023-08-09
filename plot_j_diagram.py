@@ -105,7 +105,7 @@ def load_model(log_dir: str):
     return model, config
 
 
-def plot_j_diagram(model: FuzzyVAE, imgs: list, output_filename: str, N:int=10):
+def plot_j_diagram(model: FuzzyVAE, imgs: list, output_filename: str, N:int=11):
 
     # Get z space
     x_hat, z, _, _ = model.call_detailed(tf.convert_to_tensor(imgs), False)
