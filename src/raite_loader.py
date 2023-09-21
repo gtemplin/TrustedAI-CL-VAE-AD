@@ -5,6 +5,8 @@ import os
 import sys
 import json
 from collections import defaultdict
+import time
+import tqdm
 
 import cv2
 
@@ -26,35 +28,30 @@ print(f'Num of GPUs: {len(tf.config.list_physical_devices("GPU"))}')
 
 class RaiteDataset(object):
 
-    def __init__(self, train_json_path, test_json_path, still_json_path):
+    def __init__(self, train_json_path, test_json_path, batchsize=32):
 
         super(RaiteDataset, self).__init__()
 
         self.train_dict = self._load_json_data(train_json_path)
         self.test_dict = self._load_json_data(test_json_path)
-        self.still_dict = self._load_json_data(still_json_path)
 
-        print(f'Train Keys: {self.train_dict.keys()}, Images Len: {len(self.train_dict["images"])}')
-        print(f'Test Keys: {self.test_dict.keys()}, Images Len: {len(self.test_dict["images"])}')
-        print(f'Still Keys: {self.still_dict.keys()}, Images Len: {len(self.still_dict["images"])}')
+        #output_signature = (tf.TensorSpec(shape=(None, None, 3), dtype=tf.int8), tf.RaggedTensorSpec(shape=[None, 4], dtype=tf.float32))
+        output_signature = tf.TensorSpec(shape=(None, None, 3), dtype=tf.uint8)
 
-        print(self.train_dict['annotations'][0].keys())
-        print(self.train_dict['annotations'][0]['bbox'])
-        print(self.train_dict['images'][0].keys())
-        print(self.train_dict['images'][0]['id'])
-
-
-        output_signature = (tf.TensorSpec(shape=(None, None, 3), dtype=tf.int8), tf.RaggedTensorSpec(shape=[None, 4], dtype=tf.float32))
         self.train_data = tf.data.Dataset.from_generator(self._build_tf_data, args=('train',), output_signature=output_signature)
         self.test_data = tf.data.Dataset.from_generator(self._build_tf_data, args=('test', ), output_signature=output_signature)
-        self.still_data = tf.data.Dataset.from_generator(self._build_tf_data, args=('still', ), output_signature=output_signature)
 
-        def _map_func(img, bbox):
-            return {'image': img, 'bbox_list': bbox}
+        #def _map_func(img, bbox):
+        #    return {'image': img, 'bbox_list': bbox}
+        def _map_func(img):
+            return {'image': img}
 
-        self.train_data = self.train_data.map(_map_func)
-        self.test_data = self.test_data.map(_map_func)
-        self.still_data = self.still_data.map(_map_func)
+        self.train_data = self.train_data.map(_map_func, num_parallel_calls=tf.data.AUTOTUNE).batch(batchsize)
+        self.test_data = self.test_data.map(_map_func, num_parallel_calls=tf.data.AUTOTUNE).batch(batchsize)
+
+        #dataset = tf.data.Dataset.range(2).interleave(lambda _ : dataset, num_parallel_calls=tf.data.AUTOTUNE).cache()
+        self.train_data = tf.data.Dataset.range(2).interleave(lambda _: self.train_data.prefetch(tf.data.AUTOTUNE), num_parallel_calls=tf.data.AUTOTUNE)
+        self.test_data = tf.data.Dataset.range(2).interleave(lambda _: self.test_data.prefetch(tf.data.AUTOTUNE), num_parallel_calls=tf.data.AUTOTUNE)
 
         #self.train_data = self.train_data.batch(32)
         #for row in self.train_data:
@@ -90,7 +87,7 @@ class RaiteDataset(object):
 
         return data
     
-    
+
     def _build_tf_data(self, dataset_selection: str, dataset_task: str='scene'):
 
         # These get encoded as binary
@@ -99,8 +96,8 @@ class RaiteDataset(object):
         if type(dataset_task) is bytes:
             dataset_task = dataset_task.decode('utf-8')
 
-        if dataset_selection not in ['train', 'test', 'still']:
-            raise RuntimeError(f'Error, unrecognized argument: {dataset_selection} (["test", "train", "still"])')
+        if dataset_selection not in ['train', 'test']:
+            raise RuntimeError(f'Error, unrecognized argument: {dataset_selection} (["test", "train"])')
         
         if dataset_task not in ['scene', 'objects']:
             raise RuntimeError(f'Error, unrecognized argument: {dataset_task} (["scene", "objects"])')
@@ -110,8 +107,6 @@ class RaiteDataset(object):
             data_dict = self.train_dict
         elif dataset_selection == 'test':
             data_dict = self.test_dict
-        elif dataset_selection == 'still':
-            data_dict = self.still_dict
 
         assert(data_dict is not None)
 
@@ -129,7 +124,16 @@ class RaiteDataset(object):
         
         for idx, image_meta in enumerate(data_dict['images']):
             img_filepath = image_meta['full_filepath']
-            img = cv2.imread(img_filepath)
+
+            try:
+                img = cv2.imread(img_filepath)
+            except Exception:
+                continue
+
+            if img is None:
+                continue
+
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
             image_id = image_order_to_image_id_map[idx]
             annotation_ids = image_id_annotation_map[image_id]
@@ -140,7 +144,8 @@ class RaiteDataset(object):
             if len(bbox) == 0:
                 bbox = tf.constant([[-1, -1, -1, -1]], dtype=tf.float32)
 
-            yield img, tf.RaggedTensor.from_tensor(bbox)
+            #yield img, tf.RaggedTensor.from_tensor(bbox)
+            yield img
 
 
 def get_args():
@@ -148,15 +153,57 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('train_json_path', type=str, help='Train File Location')
     parser.add_argument('test_json_path', type=str, help='Test File Location')
-    parser.add_argument('still_json_path', type=str, help='Still File Location')
+    parser.add_argument('--benchmark-epochs', '-e', type=int, default=2, help='Number of epochs to benchmark (default=2)')
 
     return parser.parse_args()
 
 
 def main():
 
+    import matplotlib.pyplot as plt
+
     args = get_args()    
-    db = RaiteDataset(args.train_json_path, args.test_json_path, args.still_json_path)
+    db = RaiteDataset(args.train_json_path, args.test_json_path)
+
+    def benchmark(dataset, num_epochs=2):
+        start_time = time.perf_counter()
+        for epoch_num in range(num_epochs):
+            for sample in tqdm.tqdm(dataset, desc=f'Epoch: {epoch_num}'):
+                pass
+        print(f'Execution Time: {time.perf_counter() - start_time}')
+
+    print('Executing Benchmark')
+
+    def _normalize_img(element):
+        return tf.cast(element['image'], tf.float32) / 255.
+
+    def _resize_img(element, img_size):
+        return tf.image.resize(element, size=img_size, antialias=True)
+    
+    r_img_size = (224, 224)
+
+    db.train_data = db.train_data.map(_normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
+    db.test_data = db.test_data.map(_normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
+
+    db.train_data = db.train_data.map(lambda x: _resize_img(x, r_img_size), num_parallel_calls=tf.data.AUTOTUNE).cache()
+    db.test_data = db.test_data.map(lambda x: _resize_img(x, r_img_size), num_parallel_calls=tf.data.AUTOTUNE).cache()
+
+    for x in db.train_data.take(1):
+        img = x[0]
+        print(tf.math.reduce_max(img))
+        print(tf.math.reduce_min(img))
+        print(img)
+        plt.imshow(img)
+        plt.show()
+        exit()
+
+
+    print('Training Set')
+    benchmark(db.train_data, args.benchmark_epochs)
+    print('Test Set')
+    benchmark(db.test_data, args.benchmark_epochs)
+
+    print('Benchmark complete')
 
 
 
