@@ -21,6 +21,7 @@ class FuzzyVAE(tf.keras.Model):
         self.w_skew = float(loss_config['w_skew'])
         self.w_kl_divergence = float(loss_config['w_kl_divergence'])
         self.w_z_l1_reg = float(loss_config['w_z_l1_reg'])
+        self.w_x_std = float(loss_config['w_x_std'])
         
         self.encoder = self._build_encoder()
         self.decoder = self._build_decoder()
@@ -187,6 +188,10 @@ class FuzzyVAE(tf.keras.Model):
         z_score = (z - z_mean) / z_std
         z_skew = tf.reduce_mean(tf.pow(z_score, 3))
         z_kurtosis = tf.reduce_mean(tf.pow(z_score, 4))
+
+        x_std = tf.math.reduce_std(x, axis=0)
+        x_hat_std = tf.math.reduce_std(x_hat_prob, axis=0)
+        x_std_loss = tf.math.reduce_mean(tf.math.pow(x_std - x_hat_std, 2))
         
         # Losses
         
@@ -210,6 +215,7 @@ class FuzzyVAE(tf.keras.Model):
         ##loss = 0.4 * mse + 0.2 * mean_loss + 0.2 * var_loss + 0.2 * z_kurtosis_loss
         ##loss = mse + 1E-5 * kl_div_gaus
 
+        #loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_z_l1_reg * z_l1_reg + self.w_x_std * x_std_loss
         loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_z_l1_reg * z_l1_reg
 
         return {
@@ -223,6 +229,7 @@ class FuzzyVAE(tf.keras.Model):
             'r_max': tf.reduce_max(x_hat_prob),
             'cross_entropy': likelihood_cross_entropy,
             'kl_div': kl_div_gaus,
+            'x_std_loss': x_std_loss,
         }
     
     def compute_loss_old(self, x, training=False):
