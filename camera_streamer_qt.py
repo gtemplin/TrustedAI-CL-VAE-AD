@@ -83,9 +83,12 @@ class CameraStreamerMainWindow(QMainWindow):
         self.handle_recording_flag = False
 
         self.process_rate = 0.0
-        self.process_rate_threshold = 0.25
+        self.inference_rate_threshold = 0.25
         self.inference_prev_time = datetime.datetime.now()
         self.disable_inference_flag = False
+        self.record_rate_threshold = 0.15
+
+        #self.video_buffer_size = int(3)
 
         # Stream Statistics
         self.stream_error_min = float('inf')
@@ -102,10 +105,14 @@ class CameraStreamerMainWindow(QMainWindow):
 
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_draws)
-        self.update_timer.start(30) # 15 Hz
+        self.update_timer.start(30)
+
+        self.inference_timer = QTimer()
+        self.inference_timer.timeout.connect(self.update_error_draws)
+        self.inference_timer.start(3000)
 
         self.setCentralWidget(main_widget)
-        self.resize(640,480)
+        self.resize(1280,480)
 
     def __del__(self):
         if self.cap is not None:
@@ -123,7 +130,7 @@ class CameraStreamerMainWindow(QMainWindow):
         try:
 
             self.cap = cv2.VideoCapture(self.rtsp_url)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            #self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.video_buffer_size)
 
         except Exception as e:
             print(f'Failed to load RTSP: {rtsp_url}', file=sys.stderr)
@@ -155,9 +162,9 @@ class CameraStreamerMainWindow(QMainWindow):
         load_model_btn.clicked.connect(self.load_model_btn_pressed)
         bottom_layout.addWidget(load_model_btn)
 
-        toggle_inference_btn = QPushButton("Toggle Inference")
-        toggle_inference_btn.clicked.connect(self.toggle_inference_btn_pressed)
-        bottom_layout.addWidget(toggle_inference_btn)
+        self.toggle_inference_btn = QPushButton("Toggle Inference")
+        self.toggle_inference_btn.clicked.connect(self.toggle_inference_btn_pressed)
+        bottom_layout.addWidget(self.toggle_inference_btn)
 
         train_model_btn = QPushButton("Train Model")
         train_model_btn.clicked.connect(self.train_model_btn_pressed)
@@ -181,6 +188,9 @@ class CameraStreamerMainWindow(QMainWindow):
         
         file_menu.addSeparator()
         file_menu.addAction("E&xit", self.window_exit)
+
+        edit_menu = menu.addMenu("&Edit")
+        edit_menu.addAction("Combine &Datasets...", self.combine_datasets_action)
 
 
     def select_record_dir_action(self):
@@ -241,8 +251,64 @@ class CameraStreamerMainWindow(QMainWindow):
         else:
             print(f'Error, directory does not exist')
 
+    def combine_datasets_action(self):
+        print('Combining Selected Datasets')
+
+        selected_directories = list()
+        selected_dir = QFileDialog.getExistingDirectory(self, "Select Existing Dataset to Merge", self.cur_dir, options=QFileDialog.ShowDirsOnly)
+
+        while os.path.isdir(selected_dir):
+            selected_directories.append(selected_dir)
+            selected_dir = QFileDialog.getExistingDirectory(self, "Select Existing Dataset to Merge", self.cur_dir, options=QFileDialog.ShowDirsOnly)
+
+        if len(selected_directories) == 0:
+            print('Cancelling operation')
+            return
+
+        dest_dir = QFileDialog.getExistingDirectory(self, "Select New Destination", self.cur_dir, options=QFileDialog.ShowDirsOnly)
+
+        if not os.path.exists(dest_dir):
+            print('Cancelling operation')
+            return
+        if not os.path.isdir(dest_dir):
+            print('Cancelling operation')
+            return
+        
+        import shutil
+        from copy import deepcopy
+        labels = list()
+
+        for src_dir in selected_directories:
+            
+            label_filepath = os.path.join(src_dir, 'labels.json')
+            if not os.path.exists(label_filepath):
+                continue
+            with open(label_filepath, 'r') as ifile:
+                labels.append(json.load(ifile))
+
+            for root_path, dirs, files in os.walk(src_dir):
+                d_dir = root_path.replace(src_dir, dest_dir, 1)
+                if not os.path.exists(d_dir):
+                    os.makedirs(d_dir)
+                for f in files:
+                    src_file = os.path.join(root_path, f)
+                    dst_file = os.path.join(d_dir, f)
+                    if os.path.exists(dst_file):
+                        os.remove(dst_file)
+                    shutil.copy(src_file, d_dir)
+
+        output_label = deepcopy(labels[0])
+        for label_obj in labels[1:]:
+            output_label['images'].extend(label_obj['images'])
+
+        label_filepath = os.path.join(dest_dir, 'labels.json')
+        with open(label_filepath, 'w') as ofile:
+            json.dump(output_label, ofile)
+
+
     def toggle_inference_btn_pressed(self):
         self.disable_inference_flag = not self.disable_inference_flag
+        self.toggle_inference_btn.setChecked(not self.disable_inference_flag)
 
 
     def train_model_btn_pressed(self):
@@ -341,7 +407,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.update_stream()
         stream_update_time = datetime.datetime.now()
         
-        self.update_error_draws()
+        #self.update_error_draws()
         error_calc_draw_time = datetime.datetime.now()
 
         self.handle_recording()
@@ -407,6 +473,9 @@ class CameraStreamerMainWindow(QMainWindow):
 
     def handle_recording(self):
 
+        if self.process_rate > self.record_rate_threshold:
+            return
+
         if self.handle_recording_flag:
             return
         
@@ -435,7 +504,7 @@ class CameraStreamerMainWindow(QMainWindow):
         if self.model is None:
             return
         
-        if self.process_rate > self.process_rate_threshold:
+        if self.process_rate > self.inference_rate_threshold:
             return
 
         if self.running_model_flag:
@@ -449,7 +518,7 @@ class CameraStreamerMainWindow(QMainWindow):
 
             tensor_start_time = datetime.datetime.now()
 
-            t_img = tf.constant((cv2.cvtColor(self.last_frame, cv2.COLOR_BGR2RGB),), dtype=tf.float32)
+            t_img = tf.convert_to_tensor([cv2.cvtColor(self.last_frame, cv2.COLOR_BGR2RGB)], dtype=tf.float32, )
             img = tf.image.resize(t_img, input_size, antialias=True) / 255.
 
             QApplication.processEvents()
