@@ -157,15 +157,15 @@ class FuzzyVAE(tf.keras.Model):
         z = self.reparameterize(mean, logvar, training)
         return self.decode(z, True)
     
-    def compute_loss(self, x, training=False):
+    def compute_loss(self, x, training=False, return_inf=False):
         #return self.compute_loss_old(x, training)
-        return self.compute_loss_new(x, training)
+        return self.compute_loss_new(x, training, return_inf)
     
     def kl_divergence_gaussian(self, z_mean:tf.Tensor, z_logvar:tf.Tensor):
         # kl_div_gaussian = 1/2 * sum(1 + log(sigma^2) - mue^2 - sigma^2)
         return 0.5 * tf.reduce_sum(tf.abs(1. + z_logvar**2 - z_mean**2 - tf.exp(z_logvar**2)))
 
-    def compute_loss_new(self, x, training=False):
+    def compute_loss_new(self, x, training=False, return_inf=False):
         
         # Get VAE Outputs
         x_hat_prob, z, mean, logvar = self.call_detailed(x, training)
@@ -218,7 +218,7 @@ class FuzzyVAE(tf.keras.Model):
         #loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_z_l1_reg * z_l1_reg + self.w_x_std * x_std_loss
         loss = self.w_mse * mse + self.w_kurtosis * z_kurtosis_loss + self.w_skew * z_skew_loss + self.w_z_l1_reg * z_l1_reg
 
-        return {
+        d = {
             'loss': loss,
             'mse': mse,
             'z_l1': z_l1_reg,
@@ -231,6 +231,11 @@ class FuzzyVAE(tf.keras.Model):
             'kl_div': kl_div_gaus,
             'x_std_loss': x_std_loss,
         }
+        if return_inf:
+            return d, x_hat_prob
+        else:
+            return d
+        
     
     def compute_loss_old(self, x, training=False):
         x_logit, z, mean, logvar = self.call_detailed(x, training)
@@ -270,3 +275,13 @@ class FuzzyVAE(tf.keras.Model):
         loss = self.compute_loss(x, training=False)
 
         return loss
+    
+    def train_step_and_run(self, x):
+
+        x_hat = None
+        with tf.GradientTape() as tape:
+            loss, x_hat = self.compute_loss(x, training=True, return_inf=True)
+        
+        grads = tape.gradient(loss['loss'], self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        return loss, x_hat
