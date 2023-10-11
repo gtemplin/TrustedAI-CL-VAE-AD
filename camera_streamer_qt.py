@@ -15,9 +15,9 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap, QPainter
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QSizePolicy,
                              QMenuBar, QMenu, QOpenGLWidget, QLabel, QScrollArea, QFileDialog, QDoubleSpinBox,
-                             QGridLayout, QPushButton, QMessageBox)
+                             QGridLayout, QPushButton, QMessageBox, QAction)
 
-from PIL import Image, ImageQt
+from PIL import Image, ImageQt, ImageDraw, ImageFont
 
 import matplotlib
 matplotlib.use('agg')
@@ -57,6 +57,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.rtsp_port = args.rtsp_port
         self.rtsp_username = args.rtsp_username
         self.rtsp_password = args.rtsp_password
+        self.rtsp_override = args.rtsp_overide
         self.rtsp_url = None
         self.cap = None
         self.setup_rtsp_url()
@@ -73,6 +74,7 @@ class CameraStreamerMainWindow(QMainWindow):
 
         self.rec_img = None
         self.rec_pixmap = None
+        self.inf_img = None
         self.error_img = None
         self.error_img_pixmap = None
 
@@ -91,8 +93,11 @@ class CameraStreamerMainWindow(QMainWindow):
         #self.video_buffer_size = int(3)
 
         # Stream Statistics
-        self.stream_error_min = float('inf')
-        self.stream_error_max = -float('inf')
+        self.stream_error_min = 0.0
+        self.stream_error_max = 0.0
+        self.stream_error_ma = 0.99
+        self.stream_error_sum_ma = 0.0
+        self.stream_error_sum_2_ma = 1.0
 
         self.setWindowTitle(f"Streaming: {self.rtsp_url}")
 
@@ -108,8 +113,12 @@ class CameraStreamerMainWindow(QMainWindow):
         self.update_timer.start(30)
 
         self.inference_timer = QTimer()
-        self.inference_timer.timeout.connect(self.update_error_draws)
-        self.inference_timer.start(3000)
+        self.inference_timer.timeout.connect(self.update_inference_draws)
+        #self.inference_timer.start(3000)
+
+        self.record_timer = QTimer()
+        self.record_timer.timeout.connect(self.handle_recording)
+        self.record_timer.start(500)
 
         self.setCentralWidget(main_widget)
         self.resize(1280,480)
@@ -122,18 +131,22 @@ class CameraStreamerMainWindow(QMainWindow):
 
     def setup_rtsp_url(self):
 
-        rtsp_url = f"{self.rtsp_ip}:{self.rtsp_port}"
-        if self.rtsp_username is not None and self.rtsp_password is not None:
-            rtsp_url = f"{self.rtsp_username}:{self.rtsp_password}@{rtsp_url}"
-        self.rtsp_url = f"rtsp://{rtsp_url}"
+        if self.rtsp_override:
+            self.rtsp_url = self.rtsp_override
+        else:
+            rtsp_url = f"{self.rtsp_ip}:{self.rtsp_port}"
+            if self.rtsp_username is not None and self.rtsp_password is not None:
+                rtsp_url = f"{self.rtsp_username}:{self.rtsp_password}@{rtsp_url}"
+            self.rtsp_url = f"rtsp://{rtsp_url}"
         print(f'RTSP URL: {self.rtsp_url}')
         try:
 
             self.cap = cv2.VideoCapture(self.rtsp_url)
             #self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.video_buffer_size)
+            #self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
 
         except Exception as e:
-            print(f'Failed to load RTSP: {rtsp_url}', file=sys.stderr)
+            print(f'Failed to load RTSP: {self.rtsp_url}', file=sys.stderr)
             print(f'Exception: {e}', file=sys.stderr)
             self.cap = None
         
@@ -144,11 +157,13 @@ class CameraStreamerMainWindow(QMainWindow):
         top_layout = QHBoxLayout()
 
         self.stream_widget = QLabel()
-        self.stream_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.stream_widget.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
+        self.stream_widget.setMinimumSize(0,0)
         top_layout.addWidget(self.stream_widget, 1)
 
         self.error_label = QLabel()
-        self.error_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.error_label.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
+        self.error_label.setMinimumSize(0,0)
         top_layout.addWidget(self.error_label, 1)
 
         bottom_layout = QHBoxLayout()
@@ -163,6 +178,7 @@ class CameraStreamerMainWindow(QMainWindow):
         bottom_layout.addWidget(load_model_btn)
 
         self.toggle_inference_btn = QPushButton("Toggle Inference")
+        self.toggle_inference_btn.setCheckable(True)
         self.toggle_inference_btn.clicked.connect(self.toggle_inference_btn_pressed)
         bottom_layout.addWidget(self.toggle_inference_btn)
 
@@ -191,6 +207,14 @@ class CameraStreamerMainWindow(QMainWindow):
 
         edit_menu = menu.addMenu("&Edit")
         edit_menu.addAction("Combine &Datasets...", self.combine_datasets_action)
+
+        view_menu = menu.addMenu("&View")
+        self.show_reconstruction_action = QAction('Show Reconstructions', self, checkable=True)
+        view_menu.addAction(self.show_reconstruction_action)
+        self.overlay_heatmap_action = QAction('Overlay Heatmap', self, checkable=True)
+        view_menu.addAction(self.overlay_heatmap_action)
+        self.draw_jet_action = QAction('Draw JET', self, checkable=True)
+        view_menu.addAction(self.draw_jet_action)
 
 
     def select_record_dir_action(self):
@@ -242,8 +266,8 @@ class CameraStreamerMainWindow(QMainWindow):
                 self.config = config
                 self.cur_dir = selected_dir
                 
-                self.stream_error_min = float('inf')
-                self.stream_error_max = -float('inf')
+                #self.stream_error_min = float('inf')
+                #self.stream_error_max = -float('inf')
 
                 #self.update_draws()
             else:
@@ -394,8 +418,6 @@ class CameraStreamerMainWindow(QMainWindow):
 
 
 
-
-
     def update_draws(self):
 
         if self.update_draws_flag:
@@ -407,10 +429,10 @@ class CameraStreamerMainWindow(QMainWindow):
         self.update_stream()
         stream_update_time = datetime.datetime.now()
         
-        #self.update_error_draws()
+        self.update_inference_draws()
         error_calc_draw_time = datetime.datetime.now()
 
-        self.handle_recording()
+        #self.handle_recording()
         record_time = datetime.datetime.now()
 
         stream_delta = stream_update_time - start_time
@@ -446,6 +468,8 @@ class CameraStreamerMainWindow(QMainWindow):
                     print(f'{time_str}: Failed to read capture devices: {self.rtsp_url}')
                     self.reading_frame_flag = False
                     return
+                
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
                 self.last_frame = frame
                 self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(frame))
@@ -496,7 +520,7 @@ class CameraStreamerMainWindow(QMainWindow):
             self.handle_recording_flag = False
 
 
-    def update_error_draws(self):
+    def update_inference_draws(self):
 
         if self.disable_inference_flag:
             return
@@ -514,36 +538,54 @@ class CameraStreamerMainWindow(QMainWindow):
         try:
             input_size = self.config['data']['image_size'][:2]
 
-            #print(type(self.last_frame), tf.math.reduce_max(self.last_frame), tf.math.reduce_min(self.last_frame))
-
-            tensor_start_time = datetime.datetime.now()
-
-            t_img = tf.convert_to_tensor([cv2.cvtColor(self.last_frame, cv2.COLOR_BGR2RGB)], dtype=tf.float32, )
-            img = tf.image.resize(t_img, input_size, antialias=True) / 255.
+            if self.inf_img is None:
+                self.inf_img = tf.Variable(self.last_frame, dtype=tf.float32)
+            else:
+                self.inf_img.assign(value=self.last_frame)
+            img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
 
             QApplication.processEvents()
 
-            inference_start_time = datetime.datetime.now()
-
             r_img = self.model.call(img, False)[0]
 
-            inference_end_time = datetime.datetime.now()
+            if self.show_reconstruction_action.isChecked():
+                res_img = tf.cast(tf.round(r_img * 255.), dtype=tf.uint8).numpy()
+                stream_error_img_pil = Image.fromarray(res_img, mode='RGB')
+            else:
 
-            stream_error_img = tf.reduce_sum(tf.math.pow(img[0] - r_img, 2), axis=2)
-            stream_error_min = tf.reduce_min(stream_error_img)
-            stream_error_max = tf.reduce_max(stream_error_img)
+                stream_error_img = tf.reduce_sum(tf.math.pow(img[0] - r_img, 2), axis=2)
+                stream_error_min = tf.reduce_min(stream_error_img)
+                stream_error_max = tf.reduce_max(stream_error_img)
 
-            self.stream_error_min = min(self.stream_error_min, stream_error_min)
-            self.stream_error_max = max(self.stream_error_max, stream_error_max)
+                self.stream_error_max = (self.stream_error_ma) * self.stream_error_max + (1.0 - self.stream_error_ma) * stream_error_max
+                self.stream_error_min = (self.stream_error_ma) * self.stream_error_min + (1.0 - self.stream_error_ma) * stream_error_min
 
-            stream_error_img = 255. * (stream_error_img - self.stream_error_min) / (self.stream_error_max - self.stream_error_min)
-            stream_error_img = np.round(stream_error_img).astype(np.uint8)
+                stream_error_img_norm = (stream_error_img - self.stream_error_min) / (self.stream_error_max - self.stream_error_min)
+                stream_error_img = np.round(255. * stream_error_img_norm).astype(np.uint8)
+                
+                stream_error_sum = tf.math.reduce_sum(stream_error_img_norm)
+                self.stream_error_sum_ma = (self.stream_error_ma) * self.stream_error_sum_ma + (1. - self.stream_error_ma) * stream_error_sum
+                self.stream_error_sum_2_ma = (self.stream_error_ma) * self.stream_error_sum_2_ma + (1. - self.stream_error_ma) * tf.math.pow(stream_error_sum, 2)
+                stream_error_sum_var = tf.abs(self.stream_error_sum_2_ma - tf.math.pow(self.stream_error_sum_ma,2))
+                anomaly_score = (stream_error_sum - self.stream_error_sum_ma) / tf.math.sqrt(stream_error_sum_var + 1E-6)
 
-            error_calculation_time = datetime.datetime.now()
+                if self.overlay_heatmap_action.isChecked():
+                    heatmap = cv2.applyColorMap(stream_error_img, cv2.COLORMAP_JET)
+                    print(heatmap.dtype, img.numpy().dtype)
+                    superimpose = cv2.addWeighted(heatmap, 0.5, np.round(255. * img.numpy()[0]).astype(np.uint8), 0.5, 0.0)
+                    stream_error_img_pil = Image.fromarray(superimpose, mode='RGB')
 
-            #res_img = tf.cast(tf.round(r_img * 255), dtype=tf.uint8).numpy()
-            #stream_error_img_pil = Image.fromarray(res_img, mode='RGB')
-            stream_error_img_pil = Image.fromarray(stream_error_img, mode='L')
+                else:
+                    if self.draw_jet_action.isChecked():
+                        heatmap = cv2.applyColorMap(stream_error_img, cv2.COLORMAP_JET)
+                        stream_error_img_pil = Image.fromarray(heatmap, mode='RGB')
+                    else:
+                        stream_error_img_pil = Image.fromarray(stream_error_img, mode='L')
+
+                font_y = tf.shape(r_img).numpy()[0] - 10
+                drawer = ImageDraw.Draw(stream_error_img_pil)
+                drawer.text((10,font_y), f'({anomaly_score:0.4g}, {stream_error_sum:0.4g}, {self.stream_error_sum_ma:0.4g}, {tf.math.sqrt(self.stream_error_sum_2_ma):0.4g})', (255,))
+
             self.error_frame = ImageQt.ImageQt(stream_error_img_pil)
             self.error_frame_pixmap = QPixmap.fromImage(self.error_frame).copy()
 
@@ -553,15 +595,6 @@ class CameraStreamerMainWindow(QMainWindow):
 
             self.error_label.setPixmap(self.error_frame_pixmap)
             self.error_label.update()
-
-            image_update_time = datetime.datetime.now()
-
-            self.inference_prev_time = image_update_time
-
-            print(f' - Tensor Conv. Delta: {(inference_start_time - tensor_start_time).total_seconds()}')
-            print(f' - Inference Delta: {(inference_end_time - inference_start_time).total_seconds()}')
-            print(f' - Error Calc. Delta: {(error_calculation_time - inference_end_time).total_seconds()}')
-            print(f' - Image Upd. Delta: {(image_update_time - error_calculation_time).total_seconds()}')
 
         finally:
             self.running_model_flag = False
@@ -574,6 +607,7 @@ def get_args():
     parser.add_argument("--rtsp-port", "-p", type=int, default=554, help="RTSP Port")
     parser.add_argument("--rtsp-username", "-u", type=str, default=None, help="RTSP access username")
     parser.add_argument("--rtsp-password", "-s", type=str, default=None, help="RTSP access password")
+    parser.add_argument("--rtsp-overide", type=str, default=None)
 
     return parser.parse_args()
 
