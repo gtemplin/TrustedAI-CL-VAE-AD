@@ -16,7 +16,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap, QPainter
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QSizePolicy,
                              QMenuBar, QMenu, QOpenGLWidget, QLabel, QScrollArea, QFileDialog, QDoubleSpinBox,
-                             QGridLayout, QPushButton, QMessageBox, QAction)
+                             QGridLayout, QPushButton, QMessageBox, QAction, QSpinBox)
 
 from PIL import Image, ImageQt, ImageDraw, ImageFont
 
@@ -55,6 +55,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.config = dict()
         self.model_cache_dir = args.model_cache_dir
         self.schedule_model_save_flag = True
+        self.model_changed_flag = True
 
         self.rtsp_ip = args.rtsp_ip
         self.rtsp_port = args.rtsp_port
@@ -131,6 +132,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         self.resize(1280,480)
 
+
     def __del__(self):
         if self.cap is not None:
             self.cap.release()
@@ -187,6 +189,7 @@ class CameraStreamerMainWindow(QMainWindow):
 
         self.toggle_inference_btn = QPushButton("Toggle Inference")
         self.toggle_inference_btn.setCheckable(True)
+        self.toggle_inference_btn.setChecked(not self.disable_inference_flag)
         self.toggle_inference_btn.clicked.connect(self.toggle_inference_btn_pressed)
         bottom_layout.addWidget(self.toggle_inference_btn)
 
@@ -199,6 +202,19 @@ class CameraStreamerMainWindow(QMainWindow):
         self.toggle_cont_learn_btn.setChecked(self.enable_cont_learning_flag)
         self.toggle_cont_learn_btn.clicked.connect(self.toggle_cont_learn_btn_pressed)
         bottom_layout.addWidget(self.toggle_cont_learn_btn)
+
+        self.learning_rate_dsb = QDoubleSpinBox()
+        self.learning_rate_dsb.setMinimum(0.0)
+        self.learning_rate_dsb.setMaximum(1.0)
+        self.learning_rate_dsb.setDecimals(3)
+        self.learning_rate_dsb.setSingleStep(0.1)
+        bottom_layout.addWidget(self.learning_rate_dsb)
+
+        self.learning_rate_exp_sb = QSpinBox()
+        self.learning_rate_exp_sb.setMinimum(-254)
+        self.learning_rate_exp_sb.setMaximum(0)
+        self.learning_rate_exp_sb.setSingleStep(1)
+        bottom_layout.addWidget(self.learning_rate_exp_sb)
 
         bottom_layout.addStretch()
 
@@ -215,6 +231,9 @@ class CameraStreamerMainWindow(QMainWindow):
         file_menu = menu.addMenu("&File")
         file_menu.addAction("Select &Camera...", self.select_camera_action)
         file_menu.addAction("Select &Record Directory...", self.select_record_dir_action)
+        
+        file_menu.addSeparator()
+        file_menu.addAction('&Save Model to cache', self.schedule_model_save_overide)
         
         file_menu.addSeparator()
         file_menu.addAction("E&xit", self.window_exit)
@@ -280,6 +299,12 @@ class CameraStreamerMainWindow(QMainWindow):
                 self.config = config
                 self.cur_dir = selected_dir
 
+                lr = float(self.config['training']['learning_rate'])
+                lr_exp = int(np.log10(lr))
+                lr_man = lr / (10**lr_exp)
+                self.learning_rate_dsb.setValue(lr_man)
+                self.learning_rate_exp_sb.setValue(lr_exp)
+
                 self.model.compile(optimizer=tf.keras.optimizers.Adam(
                     learning_rate=float(self.config['training']['learning_rate'])
                 ))
@@ -288,7 +313,7 @@ class CameraStreamerMainWindow(QMainWindow):
                     shutil.rmtree(self.model_cache_dir)
                 os.makedirs(self.model_cache_dir)
 
-                self.save_model()
+                self.save_model_to_cache()
 
             else:
                 print('Error, selected file is not a log directory')
@@ -361,6 +386,9 @@ class CameraStreamerMainWindow(QMainWindow):
 
     def schedule_model_save(self):
         self.schedule_model_save_flag = True
+    def schedule_model_save_overide(self):
+        self.schedule_model_save_flag = True
+        self.model_changed_flag = True
 
 
     def train_model_btn_pressed(self):
@@ -461,7 +489,6 @@ class CameraStreamerMainWindow(QMainWindow):
         error_calc_draw_time = datetime.datetime.now()
 
         #self.partial_fit_model()
-        self.save_model()
         model_fit_time = datetime.datetime.now()
 
         #self.handle_recording()
@@ -582,8 +609,17 @@ class CameraStreamerMainWindow(QMainWindow):
 
             # If Continuous Learning
             if self.enable_cont_learning_flag:
+
+                lr_mantisa = float(self.learning_rate_dsb.value())
+                lr_exp = int(self.learning_rate_exp_sb.value())
+                lr = float(f'{lr_mantisa}E{lr_exp}')
+
+                tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
+
                 loss, r_img = self.model.train_step_and_run(img)
                 r_img = r_img[0]
+
+                self.model_changed_flag = True
             else:
                 r_img = self.model.call(img, False)[0]
 
@@ -638,8 +674,31 @@ class CameraStreamerMainWindow(QMainWindow):
         finally:
             self.running_model_flag = False
 
-    def save_model(self):
-        pass
+    def save_model_to_cache(self):
+        if not self.schedule_model_save_flag:
+            return
+        self.schedule_model_save_flag = False
+        
+        if not self.model_changed_flag:
+            return
+        
+        try:
+            if not os.path.exists(self.model_cache_dir):
+                print(f'Error: model path does not exist: {self.model_cache_dir}', file=sys.stderr)
+                return
+            if not os.path.isdir(self.model_cache_dir):
+                print(f'Error: model path is not a directory: {self.model_cache_dir}', file=sys.stderr)
+                return
+
+            print(f'Saving model to: {self.model_cache_dir}')
+
+            self.model.encoder.save(os.path.join(self.model_cache_dir, 'encoder'))
+            self.model.decoder.save(os.path.join(self.model_cache_dir, 'decoder'))
+        finally:
+            self.model_changed_flag = False
+
+        QApplication.processEvents()
+
 
 
 
