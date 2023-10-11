@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 
 from src.fuzzy_vae import FuzzyVAE
+from src.data_loader import load_data
 
 gpu_list = tf.config.list_physical_devices('GPU')
 # Calling GPUs by default with Keras will reserve the rest of the remaining memory
@@ -88,59 +89,6 @@ def load_config(config_filename: str):
 
     return config 
     
-
-def load_data(config: dict):
-
-    data_config = config['data']
-    dataset_path = data_config.get('dataset_path')
-    dataset_name = data_config.get('dataset')
-    train_split = data_config['train_split']
-    val_split = data_config['val_split']
-    img_size = data_config['image_size']
-    batch_size = config['training']['batch_size']
-
-    r_img_size = (img_size[0], img_size[1])
-
-    if dataset_path is not None:
-        print(f'Loading dataset from: {dataset_path}')
-        assert(os.path.exists(dataset_path))
-        assert(os.path.isdir(dataset_path))
-        
-        train_ds = tf.data.Dataset.load(os.path.join(dataset_path, 'train'))
-        val_ds = tf.data.Dataset.load(os.path.join(dataset_path, 'validation'))
-
-        def normalize_img(element):
-            return tf.cast(element['image'], tf.float32) / 255.
-        
-        train_ds = train_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-        val_ds = val_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-
-    else:
-        train_ds, ds_info = tfds.load(dataset_name, split=train_split, shuffle_files=True, download=False, with_info=True)
-        val_ds = tfds.load(dataset_name, split=val_split, shuffle_files=True, download=False, with_info=False)
-
-        def normalize_img(element):
-            return tf.cast(element['image'], tf.float32) / 255.
-        
-        train_ds = train_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-        val_ds = val_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-
-    def resize_img(element, img_size):
-        return tf.image.resize(element, size=img_size)
-    
-    train_ds = train_ds.map(lambda x: resize_img(x, r_img_size), num_parallel_calls=tf.data.AUTOTUNE)
-    val_ds = val_ds.map(lambda x: resize_img(x, r_img_size), num_parallel_calls=tf.data.AUTOTUNE)
-
-    train_ds = train_ds.batch(batch_size)
-    val_ds = val_ds.batch(batch_size)
-
-    print(f'Length of Training data: {len(train_ds)}')
-
-    return {
-        'train': train_ds,
-        'val': val_ds,
-        #'info': ds_info,
-    }
 
 
 def build_model(config: dict, data: tf.data.Dataset):
