@@ -146,13 +146,13 @@ def process_train_val_reconstructions(log_dir: str, model: FuzzyVAE, config: dic
 
         _draw_heatmaps(_orig_dir, rec_error_img_dict, _heat_dir, _error_dir)
 
-        return rec_error_img_dict, rec_err_dict
+        return rec_err_dict
 
-    _ , train_reconstruction_error = _draw_reconstructions(model, data['train'], train_original_dir, train_reconstructions_dir, train_heatmap_dir, train_error_dir, batchsize, 'Drawing Training Set')
+    train_reconstruction_error = _draw_reconstructions(model, data['train'], train_original_dir, train_reconstructions_dir, train_heatmap_dir, train_error_dir, batchsize, 'Drawing Training Set')
     with open(os.path.join(log_dir, 'train_reconstruction_error.json'), 'w') as ofile:
         json.dump(train_reconstruction_error, ofile)
 
-    _ , val_reconstruction_error = _draw_reconstructions(model, data['val'], val_original_dir, val_reconstructions_dir, val_heatmap_dir, val_error_dir, batchsize, 'Drawing Validation Set')
+    val_reconstruction_error = _draw_reconstructions(model, data['val'], val_original_dir, val_reconstructions_dir, val_heatmap_dir, val_error_dir, batchsize, 'Drawing Validation Set')
     with open(os.path.join(log_dir, 'val_reconstruction_error.json'), 'w') as ofile:
         json.dump(val_reconstruction_error, ofile)
     
