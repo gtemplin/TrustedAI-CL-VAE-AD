@@ -154,6 +154,8 @@ class CameraStreamerMainWindow(QMainWindow):
             self.cap = cv2.VideoCapture(self.rtsp_url)
             #self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.video_buffer_size)
             #self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+            self.cap.set(cv2.CAP_PROP_FPS, 20)
 
         except Exception as e:
             print(f'Failed to load RTSP: {self.rtsp_url}', file=sys.stderr)
