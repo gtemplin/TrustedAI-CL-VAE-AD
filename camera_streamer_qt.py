@@ -6,6 +6,7 @@ import sys
 import tqdm
 import json
 import datetime
+import time
 import shutil
 
 import cv2
@@ -150,7 +151,7 @@ class CameraStreamerMainWindow(QMainWindow):
             self.rtsp_url = f"rtsp://{rtsp_url}"
         print(f'RTSP URL: {self.rtsp_url}')
         try:
-
+            
             self.cap = cv2.VideoCapture(self.rtsp_url)
             #self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.video_buffer_size)
             #self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
@@ -160,7 +161,22 @@ class CameraStreamerMainWindow(QMainWindow):
         except Exception as e:
             print(f'Failed to load RTSP: {self.rtsp_url}', file=sys.stderr)
             print(f'Exception: {e}', file=sys.stderr)
+            print(type(e))
+            exit()
             self.cap = None
+
+        self.negotiate_rtsp_connection()
+
+
+    def negotiate_rtsp_connection(self):
+        wait_period = 1
+
+        while not self.cap.isOpened() or not self.cap.grab():
+            print(f'Waiting {wait_period} seconds')
+            time.sleep(wait_period)
+            wait_period *= 2
+            self.cap.open(self.rtsp_url)
+            
         
 
     def build_layout(self):
@@ -530,6 +546,7 @@ class CameraStreamerMainWindow(QMainWindow):
                     time_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                     print(f'{time_str}: Failed to read capture devices: {self.rtsp_url}')
                     self.reading_frame_flag = False
+                    self.negotiate_rtsp_connection()
                     return
                 
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
