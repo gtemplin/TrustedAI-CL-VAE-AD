@@ -221,6 +221,9 @@ class CameraStreamerMainWindow(QMainWindow):
         self.toggle_cont_learn_btn.clicked.connect(self.toggle_cont_learn_btn_pressed)
         bottom_layout.addWidget(self.toggle_cont_learn_btn)
 
+        lr_lbl = QLabel('LR:')
+        bottom_layout.addWidget(lr_lbl)
+
         self.learning_rate_dsb = QDoubleSpinBox()
         self.learning_rate_dsb.setMinimum(0.0)
         self.learning_rate_dsb.setMaximum(1.0)
@@ -233,6 +236,23 @@ class CameraStreamerMainWindow(QMainWindow):
         self.learning_rate_exp_sb.setMaximum(0)
         self.learning_rate_exp_sb.setSingleStep(1)
         bottom_layout.addWidget(self.learning_rate_exp_sb)
+
+        img_noise_lbl = QLabel('Img Noise:')
+        bottom_layout.addWidget(img_noise_lbl)
+
+        self.img_noise_dsb = QDoubleSpinBox()
+        self.img_noise_dsb.setMinimum(0.0)
+        self.img_noise_dsb.setMaximum(1.0)
+        self.img_noise_dsb.setSingleStep(0.1)
+        self.img_noise_dsb.setValue(0.0)
+        bottom_layout.addWidget(self.img_noise_dsb)
+
+        self.img_noise_exp_sb = QSpinBox()
+        self.img_noise_exp_sb.setMinimum(-254)
+        self.img_noise_exp_sb.setMaximum(255)
+        self.img_noise_exp_sb.setSingleStep(1)
+        self.img_noise_exp_sb.setValue(0)
+        bottom_layout.addWidget(self.img_noise_exp_sb)
 
         bottom_layout.addStretch()
 
@@ -635,6 +655,15 @@ class CameraStreamerMainWindow(QMainWindow):
 
                 tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
 
+                img_noise_mantisa = float(self.img_noise_dsb.value())
+                img_noise_exp = int(self.img_noise_exp_sb.value())
+                img_noise = float(f'{img_noise_mantisa}E{img_noise_exp}')
+
+                #tf.keras.backend.set_value(self.model.beta, img_noise)
+                self.model.beta = img_noise
+
+                #n_img = img + tf.random.normal(img.shape, 0.0, img_noise)
+
                 loss, r_img = self.model.train_step_and_run(img)
                 r_img = r_img[0]
 
@@ -713,6 +742,10 @@ class CameraStreamerMainWindow(QMainWindow):
 
             self.model.encoder.save(os.path.join(self.model_cache_dir, 'encoder'))
             self.model.decoder.save(os.path.join(self.model_cache_dir, 'decoder'))
+
+        except Exception as e:
+            print(e)
+            pass
         finally:
             self.model_changed_flag = False
 
