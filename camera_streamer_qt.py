@@ -77,6 +77,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.update_draws_flag = False
         self.reading_frame_flag = False
         self.running_model_flag = False
+        self.new_img_ready_flag = False
 
         self.rec_img = None
         self.rec_pixmap = None
@@ -91,7 +92,11 @@ class CameraStreamerMainWindow(QMainWindow):
         self.handle_recording_flag = False
 
         self.process_rate = 0.0
-        self.inference_rate_threshold = 0.25
+        #self.inference_rate_threshold = 0.25
+        self.inference_period_ms = 50
+        self.continuous_learning_period_ms = 500
+        self.last_inference_time = datetime.datetime.now()
+        self.last_continuous_learning_time = datetime.datetime.now()
         self.inference_prev_time = datetime.datetime.now()
         self.disable_inference_flag = False
         self.record_rate_threshold = 0.15
@@ -553,9 +558,10 @@ class CameraStreamerMainWindow(QMainWindow):
         print(f'Record Delta: {record_delta.total_seconds()}')
         print('*****************************\n')
 
-        QApplication.processEvents()
+        #QApplication.processEvents()
 
         self.update_draws_flag = False
+        self.new_img_ready_flag = False
 
 
     def grab_recent_camera_frame(self):
@@ -578,6 +584,10 @@ class CameraStreamerMainWindow(QMainWindow):
 
                 self.last_frame = frame
 
+                self.new_img_ready_flag = True
+
+        except Exception as e:
+            raise e
         finally:
             self.stream_grab_flag = False
 
@@ -589,7 +599,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.reading_frame_flag = True
         
         try:
-            if self.last_frame is not None:
+            if self.new_img_ready_flag:
 
                 self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(self.last_frame))
                 self.last_frame_pixmap = QPixmap.fromImage(self.last_frame_qt).copy()
@@ -649,8 +659,14 @@ class CameraStreamerMainWindow(QMainWindow):
         if self.model is None:
             return
         
-        if self.process_rate > self.inference_rate_threshold:
+        inference_start_time = datetime.datetime.now()
+        inference_time_delta_ms = (inference_start_time - self.last_inference_time).total_seconds() * 1000.
+
+        if inference_time_delta_ms < self.inference_period_ms:
             return
+        self.last_inference_time = inference_start_time
+        #if self.process_rate > self.inference_rate_threshold:
+        #    return
 
         if self.running_model_flag:
             return
@@ -667,28 +683,32 @@ class CameraStreamerMainWindow(QMainWindow):
 
             QApplication.processEvents()
 
+            continuous_learning_time = datetime.datetime.now()
+            continuous_learning_delta_ms = (continuous_learning_time - self.last_continuous_learning_time).total_seconds() * 1000.
+
             # If Continuous Learning
-            if self.enable_cont_learning_flag:
+            if self.enable_cont_learning_flag and continuous_learning_delta_ms > self.continuous_learning_period_ms:
+                    self.last_continuous_learning_time = continuous_learning_time
 
-                lr_mantisa = float(self.learning_rate_dsb.value())
-                lr_exp = int(self.learning_rate_exp_sb.value())
-                lr = float(f'{lr_mantisa}E{lr_exp}')
+                    lr_mantisa = float(self.learning_rate_dsb.value())
+                    lr_exp = int(self.learning_rate_exp_sb.value())
+                    lr = float(f'{lr_mantisa}E{lr_exp}')
 
-                tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
+                    tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
 
-                img_noise_mantisa = float(self.img_noise_dsb.value())
-                img_noise_exp = int(self.img_noise_exp_sb.value())
-                img_noise = float(f'{img_noise_mantisa}E{img_noise_exp}')
+                    img_noise_mantisa = float(self.img_noise_dsb.value())
+                    img_noise_exp = int(self.img_noise_exp_sb.value())
+                    img_noise = float(f'{img_noise_mantisa}E{img_noise_exp}')
 
-                #tf.keras.backend.set_value(self.model.beta, img_noise)
-                self.model.beta = img_noise
+                    #tf.keras.backend.set_value(self.model.beta, img_noise)
+                    self.model.beta = img_noise
 
-                #n_img = img + tf.random.normal(img.shape, 0.0, img_noise)
+                    #n_img = img + tf.random.normal(img.shape, 0.0, img_noise)
 
-                loss, r_img = self.model.train_step_and_run(img)
-                r_img = r_img[0]
+                    loss, r_img = self.model.train_step_and_run(img)
+                    r_img = r_img[0]
 
-                self.model_changed_flag = True
+                    self.model_changed_flag = True
             else:
                 r_img = self.model.call(img, False)[0]
 
@@ -740,6 +760,8 @@ class CameraStreamerMainWindow(QMainWindow):
             self.error_label.setPixmap(self.error_frame_pixmap)
             self.error_label.update()
 
+        except Exception as e:
+            raise e
         finally:
             self.running_model_flag = False
 
