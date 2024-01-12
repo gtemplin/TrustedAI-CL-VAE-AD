@@ -46,6 +46,28 @@ if gpu_list:
 print(f'TensorFlow Version: {tf.__version__}')
 print(f'Num of GPUs: {len(tf.config.list_physical_devices("GPU"))}')
 
+class DataQueue(object):
+    # None of the implementations work as expected, so create own queue
+    # Instantiate a list of TensorFlow variables of unchanging size
+    # Append works by assigning to the next index entry with new values
+    # Returns a numpy vector (TODO: to be sliced and stacked by queue order)
+    # Initializes with a copy of first image to entire list
+    def __init__(self, data_sample, capacity:int):
+        assert(capacity > 0)
+        self._v = [tf.Variable(initial_value=data_sample, dtype=tf.float32) for _ in range(capacity)]
+        self._idx = 0
+        self._capacity = capacity
+    def append(self, x):
+        self._increment()
+        self._v[self._idx].assign(value=x)
+    def _increment(self):
+        self._idx = (self._idx + 1) % self._capacity
+    def to_numpy(self):
+        # TODO: sort by queue order
+        return np.array(self._v)
+    def get(self):
+        return self._v[self._idx]
+
 
 class CameraStreamerMainWindow(QMainWindow):
 
@@ -84,7 +106,8 @@ class CameraStreamerMainWindow(QMainWindow):
         self.rec_img = None
         self.rec_pixmap = None
         self.inf_img = None
-        self.inf_buffer = deque(maxlen=16)
+        #self.inf_buffer = deque(maxlen=16)
+        self.inf_buffer = None
         self.error_img = None
         self.error_img_pixmap = None
 
@@ -682,15 +705,17 @@ class CameraStreamerMainWindow(QMainWindow):
         try:
             input_size = self.config['data']['image_size'][:2]
 
-            if len(self.img_queue) < self.img_queue.maxlen:
-                return
-
             if self.inf_img is None:
                 self.inf_img = tf.Variable(self.last_frame, dtype=tf.float32)
             else:
                 self.inf_img.assign(value=self.last_frame)
             img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
-            self.inf_buffer.append(img[0])
+            #self.inf_buffer.append(img[0])
+            
+            if self.inf_buffer is None:
+                self.inf_buffer = DataQueue(img[0], 16)
+            else:
+                self.inf_buffer.append(img[0])
 
             #QApplication.processEvents()
 
@@ -724,8 +749,10 @@ class CameraStreamerMainWindow(QMainWindow):
 
                 #n_img = img + tf.random.normal(img.shape, 0.0, img_noise)
 
-                loss, r_img = self.model.train_step_and_run(np.array(list(self.inf_buffer)))
-                r_img = r_img[-1]
+                #loss, r_img = self.model.train_step_and_run(np.array(list(self.inf_buffer)))
+                loss, r_img = self.model.train_step_and_run(self.inf_buffer.to_numpy())
+                #r_img = r_img[-1]
+                r_img = r_img[self.inf_buffer._idx]
 
                 #print(f'Loss: {loss}')
 
