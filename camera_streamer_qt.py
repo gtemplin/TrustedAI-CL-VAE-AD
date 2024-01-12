@@ -73,6 +73,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.error_frame = None
         self.error_frame_pixmap = None
 
+        self.stream_grab_flag = False
         self.update_draws_flag = False
         self.reading_frame_flag = False
         self.running_model_flag = False
@@ -114,9 +115,13 @@ class CameraStreamerMainWindow(QMainWindow):
         main_widget = QWidget()
         main_widget.setLayout(layout)
 
+        self.stream_timer = QTimer()
+        self.stream_timer.timeout.connect(self.grab_recent_camera_frame)
+        self.stream_timer.start(50)
+
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_draws)
-        self.update_timer.start(30)
+        self.update_timer.start(50)
 
         self.inference_timer = QTimer()
         self.inference_timer.timeout.connect(self.update_inference_draws)
@@ -553,12 +558,12 @@ class CameraStreamerMainWindow(QMainWindow):
         self.update_draws_flag = False
 
 
-    def update_stream(self):
+    def grab_recent_camera_frame(self):
 
-        if self.reading_frame_flag:
+        if self.stream_grab_flag:
             return
-        self.reading_frame_flag = True
-        
+        self.stream_grab_flag = True
+
         try:
             if self.cap is not None:
                 ret, frame = self.cap.read()
@@ -570,9 +575,23 @@ class CameraStreamerMainWindow(QMainWindow):
                     return
                 
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
+
                 self.last_frame = frame
-                self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(frame))
+
+        finally:
+            self.stream_grab_flag = False
+
+
+    def update_stream(self):
+
+        if self.reading_frame_flag:
+            return
+        self.reading_frame_flag = True
+        
+        try:
+            if self.last_frame is not None:
+
+                self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(self.last_frame))
                 self.last_frame_pixmap = QPixmap.fromImage(self.last_frame_qt).copy()
 
                 w = self.stream_widget.width()
@@ -592,6 +611,8 @@ class CameraStreamerMainWindow(QMainWindow):
                 #    count += 1
                 #    if not ret:
                 #        print('No ret')
+        except Exception as e:
+            raise e
         finally:
             self.reading_frame_flag = False
 
