@@ -8,6 +8,7 @@ import json
 import datetime
 import time
 import shutil
+from collections import deque
 
 import cv2
 
@@ -67,6 +68,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.cap = None
         self.setup_rtsp_url()
 
+        self.img_queue = deque(maxlen=16)
         self.last_frame = None
         self.last_frame_qt = None
         self.last_frame_pixmap = None
@@ -82,6 +84,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.rec_img = None
         self.rec_pixmap = None
         self.inf_img = None
+        self.inf_buffer = deque(maxlen=16)
         self.error_img = None
         self.error_img_pixmap = None
 
@@ -583,6 +586,8 @@ class CameraStreamerMainWindow(QMainWindow):
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
                 self.last_frame = frame
+                
+                self.img_queue.append(frame)
 
                 self.new_img_ready_flag = True
 
@@ -601,7 +606,8 @@ class CameraStreamerMainWindow(QMainWindow):
         try:
             if self.new_img_ready_flag:
 
-                self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(self.last_frame))
+                last_frame = self.last_frame
+                self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(last_frame))
                 self.last_frame_pixmap = QPixmap.fromImage(self.last_frame_qt).copy()
 
                 w = self.stream_widget.width()
@@ -640,7 +646,8 @@ class CameraStreamerMainWindow(QMainWindow):
             if self.recording_flag:
                 if os.path.exists(self.record_instance_dir):
                     if os.path.isdir(self.record_instance_dir):
-                        img = Image.fromarray(self.last_frame)
+                        last_frame = self.last_frame
+                        img = Image.fromarray(last_frame)
                         img_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                         img_filename = os.path.join(self.record_instance_dir, 'frames', f'{img_time}.png')
                         img.save(img_filename)
@@ -675,49 +682,66 @@ class CameraStreamerMainWindow(QMainWindow):
         try:
             input_size = self.config['data']['image_size'][:2]
 
+            if len(self.img_queue) < self.img_queue.maxlen:
+                return
+
             if self.inf_img is None:
                 self.inf_img = tf.Variable(self.last_frame, dtype=tf.float32)
             else:
                 self.inf_img.assign(value=self.last_frame)
             img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
+            self.inf_buffer.append(img[0])
 
-            QApplication.processEvents()
+            #QApplication.processEvents()
 
             continuous_learning_time = datetime.datetime.now()
             continuous_learning_delta_ms = (continuous_learning_time - self.last_continuous_learning_time).total_seconds() * 1000.
 
             # If Continuous Learning
             if self.enable_cont_learning_flag and continuous_learning_delta_ms > self.continuous_learning_period_ms:
-                    self.last_continuous_learning_time = continuous_learning_time
+                
+                #if self.inf_buffer is None:
+                #    self.inf_buffer = tf.Variable(list(self.img_queue), dtype=tf.float32)
+                #else:
+                #    self.inf_buffer.assign(value=list(self.img_queue))
 
-                    lr_mantisa = float(self.learning_rate_dsb.value())
-                    lr_exp = int(self.learning_rate_exp_sb.value())
-                    lr = float(f'{lr_mantisa}E{lr_exp}')
+                #img = tf.image.resize(self.inf_buffer, input_size, antialias=True) / 255.
 
-                    tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
+                self.last_continuous_learning_time = continuous_learning_time
 
-                    img_noise_mantisa = float(self.img_noise_dsb.value())
-                    img_noise_exp = int(self.img_noise_exp_sb.value())
-                    img_noise = float(f'{img_noise_mantisa}E{img_noise_exp}')
+                lr_mantisa = float(self.learning_rate_dsb.value())
+                lr_exp = int(self.learning_rate_exp_sb.value())
+                lr = float(f'{lr_mantisa}E{lr_exp}')
 
-                    #tf.keras.backend.set_value(self.model.beta, img_noise)
-                    self.model.beta = img_noise
+                tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
 
-                    #n_img = img + tf.random.normal(img.shape, 0.0, img_noise)
+                img_noise_mantisa = float(self.img_noise_dsb.value())
+                img_noise_exp = int(self.img_noise_exp_sb.value())
+                img_noise = float(f'{img_noise_mantisa}E{img_noise_exp}')
 
-                    loss, r_img = self.model.train_step_and_run(img)
-                    r_img = r_img[0]
+                #tf.keras.backend.set_value(self.model.beta, img_noise)
+                self.model.beta = img_noise
 
-                    self.model_changed_flag = True
+                #n_img = img + tf.random.normal(img.shape, 0.0, img_noise)
+
+                loss, r_img = self.model.train_step_and_run(np.array(list(self.inf_buffer)))
+                r_img = r_img[-1]
+
+                #print(f'Loss: {loss}')
+
+                self.model_changed_flag = True
             else:
-                r_img = self.model.call(img, False)[0]
+                
+                r_img = self.model.call(img, False)[-1]
+
+            QApplication.processEvents()
 
             if self.show_reconstruction_action.isChecked():
                 res_img = tf.cast(tf.round(r_img * 255.), dtype=tf.uint8).numpy()
                 stream_error_img_pil = Image.fromarray(res_img, mode='RGB')
             else:
 
-                stream_error_img = tf.reduce_sum(tf.math.pow(img[0] - r_img, 2), axis=2)
+                stream_error_img = tf.reduce_sum(tf.math.pow(img[-1] - r_img, 2), axis=2)
                 stream_error_min = tf.reduce_min(stream_error_img)
                 stream_error_max = tf.reduce_max(stream_error_img)
 
@@ -735,8 +759,8 @@ class CameraStreamerMainWindow(QMainWindow):
 
                 if self.overlay_heatmap_action.isChecked():
                     heatmap = cv2.applyColorMap(stream_error_img, cv2.COLORMAP_JET)
-                    print(heatmap.dtype, img.numpy().dtype)
-                    superimpose = cv2.addWeighted(heatmap, 0.5, np.round(255. * img.numpy()[0]).astype(np.uint8), 0.5, 0.0)
+                    #print(heatmap.dtype, img.numpy().dtype)
+                    superimpose = cv2.addWeighted(heatmap, 0.5, np.round(255. * img.numpy()[-1]).astype(np.uint8), 0.5, 0.0)
                     stream_error_img_pil = Image.fromarray(superimpose, mode='RGB')
 
                 else:
