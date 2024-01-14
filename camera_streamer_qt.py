@@ -29,7 +29,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.fuzzy_vae import FuzzyVAE
 from src.data_loader import load_data
-from src.load_model import load_model
+from src.load_model import load_model, load_config
 
 import tensorflow as tf
 
@@ -67,6 +67,18 @@ class DataQueue(object):
         return np.array(self._v)
     def get(self):
         return self._v[self._idx]
+    
+'''
+Notes
+* We want to have two queues:
+  1. Previous M sequential samples
+  2. K Suboptimal samples from a dataset of N exemplaries
+* One process collects sequential samples to store into the circular queue
+* A second process, at a slower rate, evaluates and selects the K worst loss exemplaries
+  - Ideally executes clustering in latent space and samples most arc-distant K samples of worst loss
+  - Worst reconstructing samples within nominal range (non-anomalous) are stored as exemplaries
+* Concatenate both and process during CL process
+'''
 
 
 class CameraStreamerMainWindow(QMainWindow):
@@ -237,6 +249,10 @@ class CameraStreamerMainWindow(QMainWindow):
         self.record_btn.clicked.connect(self.record_btn_pressed)
         bottom_layout.addWidget(self.record_btn)
 
+        new_model_btn = QPushButton("New Model")
+        new_model_btn.clicked.connect(self.new_model_btn_pressed)
+        bottom_layout.addWidget(new_model_btn)
+
         load_model_btn = QPushButton("Load Model")
         load_model_btn.clicked.connect(self.load_model_btn_pressed)
         bottom_layout.addWidget(load_model_btn)
@@ -246,10 +262,6 @@ class CameraStreamerMainWindow(QMainWindow):
         self.toggle_inference_btn.setChecked(not self.disable_inference_flag)
         self.toggle_inference_btn.clicked.connect(self.toggle_inference_btn_pressed)
         bottom_layout.addWidget(self.toggle_inference_btn)
-
-        train_model_btn = QPushButton("Train Model")
-        train_model_btn.clicked.connect(self.train_model_btn_pressed)
-        bottom_layout.addWidget(train_model_btn)
 
         self.toggle_cont_learn_btn = QPushButton("Toggle Cont. Learning")
         self.toggle_cont_learn_btn.setCheckable(True)
@@ -355,6 +367,59 @@ class CameraStreamerMainWindow(QMainWindow):
             self.begin_recording()
 
 
+    def new_model_btn_pressed(self):
+        print('New Model Pressed')
+
+        # Get New Model Config
+        config_filepath = QFileDialog.getOpenFileName(self, 'Load Configuration File', self.cur_dir, 'YAML (*.yml *.yaml)')
+        config_filepath = config_filepath[0]
+
+        if os.path.exists(config_filepath):
+            if os.path.isfile(config_filepath):
+                config = None
+                model = None
+                try:
+                    config = load_config(config_filepath)
+                    model = FuzzyVAE(config)
+                    model.compile(optimizer=tf.keras.optimizers.Adam(
+                        learning_rate=float(config['training']['learning_rate'])
+                    ))
+                except Exception as e:
+                    print(f'Failed to build model from configuration file: \n{e}')
+                    return
+                self.config = config
+                self.model = model
+
+                lr = float(self.config['training']['learning_rate'])
+                lr_exp = int(np.log10(lr))
+                lr_man = lr / (10**lr_exp)
+                self.learning_rate_dsb.setValue(lr_man)
+                self.learning_rate_exp_sb.setValue(lr_exp)
+
+                try:
+                    if os.path.exists(self.model_cache_dir):
+                        shutil.rmtree(self.model_cache_dir)
+                    os.makedirs(self.model_cache_dir)
+
+                    self.save_model_to_cache()
+                except Exception as e:
+                    print(f'Failed to overwrite model cache: {e}')
+            else:
+                print('Error, selected file is not a file')
+        else:
+            print(f'Error, file does not exist')
+
+        print('New Model Loaded...')
+
+        input_size = self.config['data']['image_size'][:2]
+        if self.inf_img is None:
+            self.inf_img = tf.Variable(self.last_frame, dtype=tf.float32)
+        else:
+            self.inf_img.assign(value=self.last_frame)
+        img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
+        loss, r_img = self.model.train_step_and_run(img)
+
+
     def load_model_btn_pressed(self):
         print('Load Model Pressed')
 
@@ -383,11 +448,14 @@ class CameraStreamerMainWindow(QMainWindow):
                     learning_rate=float(self.config['training']['learning_rate'])
                 ))
 
-                if os.path.exists(self.model_cache_dir):
-                    shutil.rmtree(self.model_cache_dir)
-                os.makedirs(self.model_cache_dir)
+                try:
+                    if os.path.exists(self.model_cache_dir):
+                        shutil.rmtree(self.model_cache_dir)
+                    os.makedirs(self.model_cache_dir)
 
-                self.save_model_to_cache()
+                    self.save_model_to_cache()
+                except Exception as e:
+                    print(f'Failed to overwrite model cache: {e}')
 
             else:
                 print('Error, selected file is not a log directory')
@@ -463,10 +531,6 @@ class CameraStreamerMainWindow(QMainWindow):
     def schedule_model_save_overide(self):
         self.schedule_model_save_flag = True
         self.model_changed_flag = True
-
-
-    def train_model_btn_pressed(self):
-        print('Train Model Pressed')
 
     
     def select_camera_action(self):
@@ -799,7 +863,7 @@ class CameraStreamerMainWindow(QMainWindow):
 
                 font_y = tf.shape(r_img).numpy()[0] - 10
                 drawer = ImageDraw.Draw(stream_error_img_pil)
-                drawer.text((10,font_y), f'({anomaly_score:0.4g}, {stream_error_sum:0.4g}, {self.stream_error_sum_ma:0.4g}, {tf.math.sqrt(self.stream_error_sum_2_ma):0.4g})', (255,))
+                drawer.text((10,font_y), f'({anomaly_score:-0.4g}, {stream_error_sum:0.4g}, {self.stream_error_sum_ma:0.4g}, {tf.math.sqrt(self.stream_error_sum_2_ma):0.4g})', (255,))
 
             self.error_frame = ImageQt.ImageQt(stream_error_img_pil)
             self.error_frame_pixmap = QPixmap.fromImage(self.error_frame).copy()
