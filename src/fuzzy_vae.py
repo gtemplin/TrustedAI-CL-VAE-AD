@@ -2,6 +2,7 @@
 
 import os
 import tensorflow as tf
+import numpy as np
 
 class FuzzyVAE(tf.keras.Model):
 
@@ -44,10 +45,16 @@ class FuzzyVAE(tf.keras.Model):
             )
         
         # Encoder Latent Output
-        encoder_layers.extend([
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(self.latent_size + self.latent_size),
-        ])
+        #encoder_layers.extend([
+        #    tf.keras.layers.Flatten(),
+        #    tf.keras.layers.Dense(self.latent_size + self.latent_size),
+        #])
+
+        encoder_layers.append(tf.keras.layers.Flatten())
+        encoder_dense_filters = self.config['model'].get('encoder_dense_filters')
+        if encoder_dense_filters:
+            encoder_layers.append(tf.keras.layers.Dense(units=int(encoder_dense_filters)))
+        encoder_layers.append(tf.keras.layers.Dense(self.latent_size + self.latent_size))
 
         # Return Encoder
         return tf.keras.Sequential(encoder_layers, name='encoder')
