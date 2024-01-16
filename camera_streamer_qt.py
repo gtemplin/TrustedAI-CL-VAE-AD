@@ -302,6 +302,15 @@ class CameraStreamerMainWindow(QMainWindow):
         self.img_noise_exp_sb.setValue(0)
         bottom_layout.addWidget(self.img_noise_exp_sb)
 
+        ma_lbl = QLabel('Stream MA: ')
+        self.stream_ma_dsb = QDoubleSpinBox()
+        self.stream_ma_dsb.setMinimum(0.0)
+        self.stream_ma_dsb.setMaximum(1.0)
+        self.stream_ma_dsb.setSingleStep(0.05)
+        self.stream_ma_dsb.setValue(self.stream_error_ma)
+        bottom_layout.addWidget(ma_lbl)
+        bottom_layout.addWidget(self.stream_ma_dsb)
+
         bottom_layout.addStretch()
 
         main_layout.addLayout(top_layout, 10)
@@ -319,7 +328,8 @@ class CameraStreamerMainWindow(QMainWindow):
         file_menu.addAction("Select &Record Directory...", self.select_record_dir_action)
         
         file_menu.addSeparator()
-        file_menu.addAction('&Save Model to cache', self.schedule_model_save_overide)
+        file_menu.addAction('&Save Model...', self.save_model_to_location)
+        file_menu.addAction('Save Model to cache', self.schedule_model_save_overide)
         
         file_menu.addSeparator()
         file_menu.addAction("E&xit", self.window_exit)
@@ -531,6 +541,39 @@ class CameraStreamerMainWindow(QMainWindow):
     def schedule_model_save_overide(self):
         self.schedule_model_save_flag = True
         self.model_changed_flag = True
+    def save_model_to_location(self):
+
+        if self.model is None:
+            return
+
+        selected_dir = QFileDialog.getExistingDirectory(self, "Select Model Directory", self.record_dir, QFileDialog.ShowDirsOnly)
+        
+        if os.path.exists(selected_dir):
+            if os.path.isdir(selected_dir):
+                now = datetime.datetime.now()
+                model_dir_path = os.path.join(os.path.abspath(selected_dir), f'date_{datetime.datetime.strftime(now, "%Y%m%d_%H%M%S")}')
+                try:
+                    os.makedirs(model_dir_path)
+                except Exception as e:
+                    print(f'Failed to create directory: {model_dir_path}')
+                    print(e)
+                    return
+
+                try:
+                    self.model.encoder.save(os.path.join(model_dir_path, 'encoder'))
+                except Exception as e:
+                    print(f'Failed to save model to path: {model_dir_path}')
+                    print(e)
+                    return
+                
+                try:
+                    self.model.decoder.save(os.path.join(model_dir_path, 'decoder'))
+                except Exception as e:
+                    print(f'Failed to save decoder to path: {model_dir_path}')
+                    print(e)
+                    return
+
+                print(f'Saved Model to {model_dir_path}')
 
     
     def select_camera_action(self):
@@ -831,6 +874,8 @@ class CameraStreamerMainWindow(QMainWindow):
                 res_img = tf.cast(tf.round(r_img * 255.), dtype=tf.uint8).numpy()
                 stream_error_img_pil = Image.fromarray(res_img, mode='RGB')
             else:
+
+                self.stream_error_ma = self.stream_ma_dsb.value()
 
                 stream_error_img = tf.reduce_sum(tf.math.pow(img[-1] - r_img, 2), axis=2)
                 stream_error_min = tf.reduce_min(stream_error_img)
