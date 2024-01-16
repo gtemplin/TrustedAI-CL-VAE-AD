@@ -10,6 +10,9 @@ import time
 import shutil
 from collections import deque
 
+from multiprocessing import Pool
+from itertools import repeat
+
 import cv2
 
 import numpy as np
@@ -102,12 +105,20 @@ class CameraStreamerMainWindow(QMainWindow):
         self.cap = None
         self.setup_rtsp_url()
 
+        # Image Buffers
         self.img_queue = deque(maxlen=16)
         self.last_frame = None
         self.last_frame_qt = None
         self.last_frame_pixmap = None
         self.error_frame = None
         self.error_frame_pixmap = None
+        self.stream_error_img = None
+        self.heatmap = None
+        self.heatmap_overlay = None
+        self.reconstruction_img_pil = None
+        self.heatmap_img = None
+        self.heatmap_overlay_img = None
+        self.stream_error_img_pil = None
 
         self.stream_grab_flag = False
         self.update_draws_flag = False
@@ -146,8 +157,17 @@ class CameraStreamerMainWindow(QMainWindow):
         self.stream_error_min = 0.0
         self.stream_error_max = 0.0
         self.stream_error_ma = 0.99
-        self.stream_error_sum_ma = 0.0
-        self.stream_error_sum_2_ma = 1.0
+        self.stream_error_sum_ma = None
+        self.stream_error_sum_2_ma = None
+
+        self.anomaly_score = 0.
+        self.anomaly_score_sum = 0.
+        self.anomaly_score_sum_2 = 0.
+        self.anomaly_score_mean = 0.
+        self.anomaly_score_std = 0.
+        self.anomaly_score_min = 0.
+        self.anomaly_score_max = 0.
+        self.anomaly_score_map = None
 
         self.setWindowTitle(f"Streaming: {self.rtsp_url}")
 
@@ -306,7 +326,8 @@ class CameraStreamerMainWindow(QMainWindow):
         self.stream_ma_dsb = QDoubleSpinBox()
         self.stream_ma_dsb.setMinimum(0.0)
         self.stream_ma_dsb.setMaximum(1.0)
-        self.stream_ma_dsb.setSingleStep(0.05)
+        self.stream_ma_dsb.setSingleStep(0.005)
+        self.stream_ma_dsb.setDecimals(4)
         self.stream_ma_dsb.setValue(self.stream_error_ma)
         bottom_layout.addWidget(ma_lbl)
         bottom_layout.addWidget(self.stream_ma_dsb)
@@ -604,6 +625,11 @@ class CameraStreamerMainWindow(QMainWindow):
         start_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         self.record_instance_dir = os.path.join(self.record_dir, f'data_{start_time}')
         os.makedirs(os.path.join(self.record_instance_dir, 'frames'))
+        os.makedirs(os.path.join(self.record_instance_dir, 'err'))
+        os.makedirs(os.path.join(self.record_instance_dir, 'heatmap'))
+        os.makedirs(os.path.join(self.record_instance_dir, 'overlay'))
+        os.makedirs(os.path.join(self.record_instance_dir, 'rec'))
+        self.anomaly_score_map = {}
         print(f'Recording to: {self.record_instance_dir}')
         
         self.recording_flag = True
@@ -640,13 +666,19 @@ class CameraStreamerMainWindow(QMainWindow):
         for idx, img_filepath in tqdm.tqdm(enumerate(img_filelist), desc='Reading images'):
             img = Image.open(img_filepath)
             width, height = img.size
+            img_basename = os.path.split(img_filepath)[1]
             entry = {
                 'id': idx,
                 'width': width,
                 'height': height,
-                'file_name': os.path.split(img_filepath)[1],
+                'file_name': img_basename,
             }
             output_dict['images'].append(entry)
+
+            anomaly_score = self.anomaly_score_map.get(img_basename)
+            if anomaly_score is not None:
+                anomaly_entry = {img_basename: anomaly_score}
+                output_dict['annotations'].append(anomaly_entry)
 
         labels_filename = os.path.join(self.record_instance_dir, 'labels.json')
         print(f'Saving labels to: {labels_filename}')
@@ -774,13 +806,40 @@ class CameraStreamerMainWindow(QMainWindow):
 
         try:
             if self.recording_flag:
+                img_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                img_basename = f'{img_time}.png'
+                self.anomaly_score_map[img_basename] = self.anomaly_score
+
+                #img_filename = os.path.join(self.record_instance_dir, 'frames', img_basename)
+
                 if os.path.exists(self.record_instance_dir):
                     if os.path.isdir(self.record_instance_dir):
-                        last_frame = self.last_frame
-                        img = Image.fromarray(last_frame)
-                        img_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-                        img_filename = os.path.join(self.record_instance_dir, 'frames', f'{img_time}.png')
-                        img.save(img_filename)
+                        last_frame_img = Image.fromarray(self.last_frame, mode='RGB')
+
+                        filename_list = [
+                            os.path.join(self.record_instance_dir, 'frames', img_basename),
+                            os.path.join(self.record_instance_dir, 'heatmap', img_basename),
+                            os.path.join(self.record_instance_dir, 'overlay', img_basename),
+                            os.path.join(self.record_instance_dir, 'err', img_basename),
+                            os.path.join(self.record_instance_dir, 'rec', img_basename)
+                        ]
+
+                        img_list = [
+                            last_frame_img,
+                            self.heatmap_img,
+                            self.heatmap_overlay_img,
+                            self.stream_error_img_pil,
+                            self.reconstruction_img_pil,
+                        ]
+                        #with Pool(4) as pool:
+                        #    pool.starmap(_m_img_file_save, zip(filename_list, img_list))
+
+                        for f, i in zip(filename_list, img_list):
+                            _m_img_file_save(f, i)
+
+                        #last_frame = self.last_frame
+                        #img = Image.fromarray(last_frame)
+                        #img.save(img_filename)
         except Exception as e:
             print(f'Failed to save image: {e}', file=sys.stderr)
         
@@ -872,45 +931,72 @@ class CameraStreamerMainWindow(QMainWindow):
 
             if self.show_reconstruction_action.isChecked():
                 res_img = tf.cast(tf.round(r_img * 255.), dtype=tf.uint8).numpy()
-                stream_error_img_pil = Image.fromarray(res_img, mode='RGB')
+                self.reconstruction_img_pil = Image.fromarray(res_img, mode='RGB')
+                ouput_img_pil = Image.fromarray(res_img, mode='RGB')
             else:
 
                 self.stream_error_ma = self.stream_ma_dsb.value()
 
-                stream_error_img = tf.reduce_sum(tf.math.pow(img[-1] - r_img, 2), axis=2)
-                stream_error_min = tf.reduce_min(stream_error_img)
-                stream_error_max = tf.reduce_max(stream_error_img)
+                stream_error_raw = tf.reduce_sum(tf.math.pow(img[-1] - r_img, 2), axis=2)
+                stream_error_min = tf.reduce_min(stream_error_raw)
+                stream_error_max = tf.reduce_max(stream_error_raw)
 
                 self.stream_error_max = (self.stream_error_ma) * self.stream_error_max + (1.0 - self.stream_error_ma) * stream_error_max
                 self.stream_error_min = (self.stream_error_ma) * self.stream_error_min + (1.0 - self.stream_error_ma) * stream_error_min
 
-                stream_error_img_norm = (stream_error_img - self.stream_error_min) / (self.stream_error_max - self.stream_error_min)
-                stream_error_img = np.round(255. * stream_error_img_norm).astype(np.uint8)
+                stream_error_img_norm = (stream_error_raw - self.stream_error_min) / (self.stream_error_max - self.stream_error_min)
+                self.stream_error_img = np.round(255. * stream_error_img_norm).astype(np.uint8)
                 
-                stream_error_sum = tf.math.reduce_sum(stream_error_img_norm)
+                #stream_error_sum = tf.math.reduce_sum(stream_error_raw)
+                stream_error_sum = stream_error_raw * 1.0
+
+                if self.stream_error_sum_ma is None:
+                    self.stream_error_sum_ma = stream_error_sum
+                if self.stream_error_sum_2_ma is None:
+                    self.stream_error_sum_2_ma = tf.math.pow(stream_error_sum, 2)
+
                 self.stream_error_sum_ma = (self.stream_error_ma) * self.stream_error_sum_ma + (1. - self.stream_error_ma) * stream_error_sum
                 self.stream_error_sum_2_ma = (self.stream_error_ma) * self.stream_error_sum_2_ma + (1. - self.stream_error_ma) * tf.math.pow(stream_error_sum, 2)
                 stream_error_sum_var = tf.abs(self.stream_error_sum_2_ma - tf.math.pow(self.stream_error_sum_ma,2))
-                anomaly_score = (stream_error_sum - self.stream_error_sum_ma) / tf.math.sqrt(stream_error_sum_var + 1E-6)
+                error_z_scores = (stream_error_sum - self.stream_error_sum_ma) / tf.math.sqrt(stream_error_sum_var + 1E-10)
 
+                error_z_mean = tf.math.reduce_mean(error_z_scores)
+                error_z_std = tf.math.reduce_std(error_z_scores)
+
+                error_z_z_scores = (error_z_scores - error_z_mean) / error_z_std
+                anomaly_count = float(np.sum(error_z_z_scores > 3.0))
+
+                self.anomaly_score_sum = (self.stream_error_ma) * self.anomaly_score_sum + (1.0 - self.stream_error_ma) * anomaly_count
+                self.anomaly_score_sum_2 = (self.stream_error_ma) * self.anomaly_score_sum_2 + (1.0 - self.stream_error_ma) * tf.math.pow(anomaly_count, 2)
+                anomaly_var = (self.anomaly_score_sum_2 - tf.math.pow(self.anomaly_score_sum, 2))
+                self.anomaly_score = float(tf.squeeze((anomaly_count - self.anomaly_score_sum) / tf.math.sqrt(anomaly_var)).numpy())
+
+                # Heatmap Construction
+                self.heatmap = cv2.applyColorMap(self.stream_error_img, cv2.COLORMAP_JET)
+                self.heatmap_overlay = cv2.addWeighted(self.heatmap, 0.5, np.round(255. * img.numpy()[-1]).astype(np.uint8), 0.5, 0.0)
+
+                self.heatmap_img = Image.fromarray(self.heatmap, mode='RGB')
+                self.heatmap_overlay_img = Image.fromarray(self.heatmap_overlay, mode='RGB')
+                self.stream_error_img_pil = Image.fromarray(self.stream_error_img, mode='L')
+
+
+                # Prepare for display to Qt
                 if self.overlay_heatmap_action.isChecked():
-                    heatmap = cv2.applyColorMap(stream_error_img, cv2.COLORMAP_JET)
-                    #print(heatmap.dtype, img.numpy().dtype)
-                    superimpose = cv2.addWeighted(heatmap, 0.5, np.round(255. * img.numpy()[-1]).astype(np.uint8), 0.5, 0.0)
-                    stream_error_img_pil = Image.fromarray(superimpose, mode='RGB')
-
+                    ouput_img_pil = self.heatmap_overlay_img
                 else:
                     if self.draw_jet_action.isChecked():
-                        heatmap = cv2.applyColorMap(stream_error_img, cv2.COLORMAP_JET)
-                        stream_error_img_pil = Image.fromarray(heatmap, mode='RGB')
+                        ouput_img_pil = self.heatmap_img
                     else:
-                        stream_error_img_pil = Image.fromarray(stream_error_img, mode='L')
+                        ouput_img_pil = self.stream_error_img_pil
 
+                # Over-write Anomaly Score
                 font_y = tf.shape(r_img).numpy()[0] - 10
-                drawer = ImageDraw.Draw(stream_error_img_pil)
-                drawer.text((10,font_y), f'({anomaly_score:-0.4g}, {stream_error_sum:0.4g}, {self.stream_error_sum_ma:0.4g}, {tf.math.sqrt(self.stream_error_sum_2_ma):0.4g})', (255,))
+                drawer = ImageDraw.Draw(ouput_img_pil)
+                #drawer.text((10,font_y), f'({anomaly_score: 1.4f}, {stream_error_sum:4.4f}, {self.stream_error_sum_ma:4.4f}, {tf.math.sqrt(self.stream_error_sum_2_ma):1.4f}, {stream_error_sum_var:1.4f})', (255,))
+                drawer.text((10,font_y), f'({self.anomaly_score: 1.4f})', (255,))
 
-            self.error_frame = ImageQt.ImageQt(stream_error_img_pil)
+            # Update Qt Error Stream Dsiplay
+            self.error_frame = ImageQt.ImageQt(ouput_img_pil)
             self.error_frame_pixmap = QPixmap.fromImage(self.error_frame).copy()
 
             w = self.error_label.width()
@@ -954,7 +1040,11 @@ class CameraStreamerMainWindow(QMainWindow):
 
         QApplication.processEvents()
 
-
+def _m_img_file_save(filename: str, img: Image):
+    if filename is None or img is None:
+        print(f'Failed to save: {filename}')
+    else:
+        img.save(filename)
 
 
 def get_args():
