@@ -161,6 +161,8 @@ class CameraStreamerMainWindow(QMainWindow):
         self.stream_error_sum_2_ma = None
 
         self.anomaly_score = 0.
+        self.anomaly_score_ma = 0.
+        self.anomaly_score_ma_weight = 0.9
         self.anomaly_score_sum = 0.
         self.anomaly_score_sum_2 = 0.
         self.anomaly_score_mean = 0.
@@ -331,6 +333,16 @@ class CameraStreamerMainWindow(QMainWindow):
         self.stream_ma_dsb.setValue(self.stream_error_ma)
         bottom_layout.addWidget(ma_lbl)
         bottom_layout.addWidget(self.stream_ma_dsb)
+
+        anomaly_ma_lbl = QLabel('AS MA: ')
+        self.anomaly_ma_dsb = QDoubleSpinBox()
+        self.anomaly_ma_dsb.setMinimum(0.0)
+        self.anomaly_ma_dsb.setMaximum(1.0)
+        self.anomaly_ma_dsb.setSingleStep(0.005)
+        self.anomaly_ma_dsb.setDecimals(4)
+        self.anomaly_ma_dsb.setValue(self.anomaly_score_ma_weight)
+        bottom_layout.addWidget(anomaly_ma_lbl)
+        bottom_layout.addWidget(self.anomaly_ma_dsb)
 
         bottom_layout.addStretch()
 
@@ -969,6 +981,12 @@ class CameraStreamerMainWindow(QMainWindow):
             anomaly_var = (self.anomaly_score_sum_2 - tf.math.pow(self.anomaly_score_sum, 2))
             self.anomaly_score = float(tf.squeeze((anomaly_count - self.anomaly_score_sum) / tf.math.sqrt(anomaly_var)).numpy())
 
+            as_ma = self.anomaly_ma_dsb.value()
+            anomaly_score_ma = (as_ma) * self.anomaly_score_ma + (1.0 - as_ma) * self.anomaly_score
+            
+            if not np.isnan(anomaly_score_ma):
+                self.anomaly_score_ma = anomaly_score_ma
+
             # Heatmap Construction
             self.heatmap = cv2.applyColorMap(self.stream_error_img, cv2.COLORMAP_JET)
             self.heatmap_overlay = cv2.addWeighted(self.heatmap, 0.5, np.round(255. * img.numpy()[-1]).astype(np.uint8), 0.5, 0.0)
@@ -992,7 +1010,7 @@ class CameraStreamerMainWindow(QMainWindow):
             font_y = tf.shape(r_img).numpy()[0] - 10
             drawer = ImageDraw.Draw(ouput_img_pil)
             #drawer.text((10,font_y), f'({anomaly_score: 1.4f}, {stream_error_sum:4.4f}, {self.stream_error_sum_ma:4.4f}, {tf.math.sqrt(self.stream_error_sum_2_ma):1.4f}, {stream_error_sum_var:1.4f})', (255,))
-            drawer.text((10,font_y), f'({self.anomaly_score: 1.4f})', (255,))
+            drawer.text((10,font_y), f'(AS: {self.anomaly_score: 1.4f}, MA: {self.anomaly_score_ma: 1.4f})', (255,))
 
             # Update Qt Error Stream Dsiplay
             self.error_frame = ImageQt.ImageQt(ouput_img_pil)
