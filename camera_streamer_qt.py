@@ -780,7 +780,7 @@ class CameraStreamerMainWindow(QMainWindow):
                 #self.stream_widget.setScaledContents(True)
                 self.stream_widget.update()
 
-                print(self.cap.get(cv2.CAP_PROP_READ_TIMEOUT_MSEC))
+                #print(self.cap.get(cv2.CAP_PROP_READ_TIMEOUT_MSEC))
                 #print(self.cap.get(cv2.CAP_PROP_POS_MSEC), self.cap.get(cv2.CAP_PROP_BUFFERSIZE))
                 
                 #count = 1
@@ -929,71 +929,70 @@ class CameraStreamerMainWindow(QMainWindow):
 
             QApplication.processEvents()
 
+            
+            res_img = tf.cast(tf.round(r_img * 255.), dtype=tf.uint8).numpy()
+            self.reconstruction_img_pil = Image.fromarray(res_img, mode='RGB')
+
+            self.stream_error_ma = self.stream_ma_dsb.value()
+
+            stream_error_raw = tf.reduce_sum(tf.math.pow(img[-1] - r_img, 2), axis=2)
+            stream_error_min = tf.reduce_min(stream_error_raw)
+            stream_error_max = tf.reduce_max(stream_error_raw)
+
+            self.stream_error_max = (self.stream_error_ma) * self.stream_error_max + (1.0 - self.stream_error_ma) * stream_error_max
+            self.stream_error_min = (self.stream_error_ma) * self.stream_error_min + (1.0 - self.stream_error_ma) * stream_error_min
+
+            stream_error_img_norm = (stream_error_raw - self.stream_error_min) / (self.stream_error_max - self.stream_error_min)
+            self.stream_error_img = np.round(255. * stream_error_img_norm).astype(np.uint8)
+            
+            #stream_error_sum = tf.math.reduce_sum(stream_error_raw)
+            stream_error_sum = stream_error_raw * 1.0
+
+            if self.stream_error_sum_ma is None:
+                self.stream_error_sum_ma = stream_error_sum
+            if self.stream_error_sum_2_ma is None:
+                self.stream_error_sum_2_ma = tf.math.pow(stream_error_sum, 2)
+
+            self.stream_error_sum_ma = (self.stream_error_ma) * self.stream_error_sum_ma + (1. - self.stream_error_ma) * stream_error_sum
+            self.stream_error_sum_2_ma = (self.stream_error_ma) * self.stream_error_sum_2_ma + (1. - self.stream_error_ma) * tf.math.pow(stream_error_sum, 2)
+            stream_error_sum_var = tf.abs(self.stream_error_sum_2_ma - tf.math.pow(self.stream_error_sum_ma,2))
+            error_z_scores = (stream_error_sum - self.stream_error_sum_ma) / tf.math.sqrt(stream_error_sum_var + 1E-10)
+
+            error_z_mean = tf.math.reduce_mean(error_z_scores)
+            error_z_std = tf.math.reduce_std(error_z_scores)
+
+            error_z_z_scores = (error_z_scores - error_z_mean) / error_z_std
+            anomaly_count = float(np.sum(error_z_z_scores > 3.0))
+
+            self.anomaly_score_sum = (self.stream_error_ma) * self.anomaly_score_sum + (1.0 - self.stream_error_ma) * anomaly_count
+            self.anomaly_score_sum_2 = (self.stream_error_ma) * self.anomaly_score_sum_2 + (1.0 - self.stream_error_ma) * tf.math.pow(anomaly_count, 2)
+            anomaly_var = (self.anomaly_score_sum_2 - tf.math.pow(self.anomaly_score_sum, 2))
+            self.anomaly_score = float(tf.squeeze((anomaly_count - self.anomaly_score_sum) / tf.math.sqrt(anomaly_var)).numpy())
+
+            # Heatmap Construction
+            self.heatmap = cv2.applyColorMap(self.stream_error_img, cv2.COLORMAP_JET)
+            self.heatmap_overlay = cv2.addWeighted(self.heatmap, 0.5, np.round(255. * img.numpy()[-1]).astype(np.uint8), 0.5, 0.0)
+
+            self.heatmap_img = Image.fromarray(self.heatmap, mode='RGB')
+            self.heatmap_overlay_img = Image.fromarray(self.heatmap_overlay, mode='RGB')
+            self.stream_error_img_pil = Image.fromarray(self.stream_error_img, mode='L')
+
+
+            # Prepare for display to Qt
             if self.show_reconstruction_action.isChecked():
-                res_img = tf.cast(tf.round(r_img * 255.), dtype=tf.uint8).numpy()
-                self.reconstruction_img_pil = Image.fromarray(res_img, mode='RGB')
-                ouput_img_pil = Image.fromarray(res_img, mode='RGB')
+                ouput_img_pil = self.reconstruction_img_pil
+            elif self.overlay_heatmap_action.isChecked():
+                ouput_img_pil = self.heatmap_overlay_img
+            elif self.draw_jet_action.isChecked():
+                ouput_img_pil = self.heatmap_img
             else:
+                ouput_img_pil = self.stream_error_img_pil
 
-                self.stream_error_ma = self.stream_ma_dsb.value()
-
-                stream_error_raw = tf.reduce_sum(tf.math.pow(img[-1] - r_img, 2), axis=2)
-                stream_error_min = tf.reduce_min(stream_error_raw)
-                stream_error_max = tf.reduce_max(stream_error_raw)
-
-                self.stream_error_max = (self.stream_error_ma) * self.stream_error_max + (1.0 - self.stream_error_ma) * stream_error_max
-                self.stream_error_min = (self.stream_error_ma) * self.stream_error_min + (1.0 - self.stream_error_ma) * stream_error_min
-
-                stream_error_img_norm = (stream_error_raw - self.stream_error_min) / (self.stream_error_max - self.stream_error_min)
-                self.stream_error_img = np.round(255. * stream_error_img_norm).astype(np.uint8)
-                
-                #stream_error_sum = tf.math.reduce_sum(stream_error_raw)
-                stream_error_sum = stream_error_raw * 1.0
-
-                if self.stream_error_sum_ma is None:
-                    self.stream_error_sum_ma = stream_error_sum
-                if self.stream_error_sum_2_ma is None:
-                    self.stream_error_sum_2_ma = tf.math.pow(stream_error_sum, 2)
-
-                self.stream_error_sum_ma = (self.stream_error_ma) * self.stream_error_sum_ma + (1. - self.stream_error_ma) * stream_error_sum
-                self.stream_error_sum_2_ma = (self.stream_error_ma) * self.stream_error_sum_2_ma + (1. - self.stream_error_ma) * tf.math.pow(stream_error_sum, 2)
-                stream_error_sum_var = tf.abs(self.stream_error_sum_2_ma - tf.math.pow(self.stream_error_sum_ma,2))
-                error_z_scores = (stream_error_sum - self.stream_error_sum_ma) / tf.math.sqrt(stream_error_sum_var + 1E-10)
-
-                error_z_mean = tf.math.reduce_mean(error_z_scores)
-                error_z_std = tf.math.reduce_std(error_z_scores)
-
-                error_z_z_scores = (error_z_scores - error_z_mean) / error_z_std
-                anomaly_count = float(np.sum(error_z_z_scores > 3.0))
-
-                self.anomaly_score_sum = (self.stream_error_ma) * self.anomaly_score_sum + (1.0 - self.stream_error_ma) * anomaly_count
-                self.anomaly_score_sum_2 = (self.stream_error_ma) * self.anomaly_score_sum_2 + (1.0 - self.stream_error_ma) * tf.math.pow(anomaly_count, 2)
-                anomaly_var = (self.anomaly_score_sum_2 - tf.math.pow(self.anomaly_score_sum, 2))
-                self.anomaly_score = float(tf.squeeze((anomaly_count - self.anomaly_score_sum) / tf.math.sqrt(anomaly_var)).numpy())
-
-                # Heatmap Construction
-                self.heatmap = cv2.applyColorMap(self.stream_error_img, cv2.COLORMAP_JET)
-                self.heatmap_overlay = cv2.addWeighted(self.heatmap, 0.5, np.round(255. * img.numpy()[-1]).astype(np.uint8), 0.5, 0.0)
-
-                self.heatmap_img = Image.fromarray(self.heatmap, mode='RGB')
-                self.heatmap_overlay_img = Image.fromarray(self.heatmap_overlay, mode='RGB')
-                self.stream_error_img_pil = Image.fromarray(self.stream_error_img, mode='L')
-
-
-                # Prepare for display to Qt
-                if self.overlay_heatmap_action.isChecked():
-                    ouput_img_pil = self.heatmap_overlay_img
-                else:
-                    if self.draw_jet_action.isChecked():
-                        ouput_img_pil = self.heatmap_img
-                    else:
-                        ouput_img_pil = self.stream_error_img_pil
-
-                # Over-write Anomaly Score
-                font_y = tf.shape(r_img).numpy()[0] - 10
-                drawer = ImageDraw.Draw(ouput_img_pil)
-                #drawer.text((10,font_y), f'({anomaly_score: 1.4f}, {stream_error_sum:4.4f}, {self.stream_error_sum_ma:4.4f}, {tf.math.sqrt(self.stream_error_sum_2_ma):1.4f}, {stream_error_sum_var:1.4f})', (255,))
-                drawer.text((10,font_y), f'({self.anomaly_score: 1.4f})', (255,))
+            # Over-write Anomaly Score
+            font_y = tf.shape(r_img).numpy()[0] - 10
+            drawer = ImageDraw.Draw(ouput_img_pil)
+            #drawer.text((10,font_y), f'({anomaly_score: 1.4f}, {stream_error_sum:4.4f}, {self.stream_error_sum_ma:4.4f}, {tf.math.sqrt(self.stream_error_sum_2_ma):1.4f}, {stream_error_sum_var:1.4f})', (255,))
+            drawer.text((10,font_y), f'({self.anomaly_score: 1.4f})', (255,))
 
             # Update Qt Error Stream Dsiplay
             self.error_frame = ImageQt.ImageQt(ouput_img_pil)
