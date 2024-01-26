@@ -51,6 +51,7 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('config_filename', type=str, help='YAML configuration file')
+    parser.add_argument('--dry-run', action='store_true', help='Quit before executing training')
     
     return parser.parse_args()
 
@@ -202,6 +203,8 @@ def main():
     config = load_config(args.config_filename)
     data = load_data(config)
     model = build_model(config, data)
+    if args.dry_run:
+        exit()
     model = train_model(config, model, data)
     evaluate(config, model, data)
 

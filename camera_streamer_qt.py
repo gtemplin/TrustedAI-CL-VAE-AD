@@ -8,6 +8,10 @@ import json
 import datetime
 import time
 import shutil
+from collections import deque
+
+from multiprocessing import Pool
+from itertools import repeat
 
 import cv2
 
@@ -28,7 +32,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.fuzzy_vae import FuzzyVAE
 from src.data_loader import load_data
-from src.load_model import load_model
+from src.load_model import load_model, load_config
 
 import tensorflow as tf
 
@@ -44,6 +48,40 @@ if gpu_list:
 
 print(f'TensorFlow Version: {tf.__version__}')
 print(f'Num of GPUs: {len(tf.config.list_physical_devices("GPU"))}')
+
+class DataQueue(object):
+    # None of the implementations work as expected, so create own queue
+    # Instantiate a list of TensorFlow variables of unchanging size
+    # Append works by assigning to the next index entry with new values
+    # Returns a numpy vector (TODO: to be sliced and stacked by queue order)
+    # Initializes with a copy of first image to entire list
+    def __init__(self, data_sample, capacity:int):
+        assert(capacity > 0)
+        self._v = [tf.Variable(initial_value=data_sample, dtype=tf.float32) for _ in range(capacity)]
+        self._idx = 0
+        self._capacity = capacity
+    def append(self, x):
+        self._increment()
+        self._v[self._idx].assign(value=x)
+    def _increment(self):
+        self._idx = (self._idx + 1) % self._capacity
+    def to_numpy(self):
+        # TODO: sort by queue order
+        return np.array(self._v)
+    def get(self):
+        return self._v[self._idx]
+    
+'''
+Notes
+* We want to have two queues:
+  1. Previous M sequential samples
+  2. K Suboptimal samples from a dataset of N exemplaries
+* One process collects sequential samples to store into the circular queue
+* A second process, at a slower rate, evaluates and selects the K worst loss exemplaries
+  - Ideally executes clustering in latent space and samples most arc-distant K samples of worst loss
+  - Worst reconstructing samples within nominal range (non-anomalous) are stored as exemplaries
+* Concatenate both and process during CL process
+'''
 
 
 class CameraStreamerMainWindow(QMainWindow):
@@ -67,19 +105,32 @@ class CameraStreamerMainWindow(QMainWindow):
         self.cap = None
         self.setup_rtsp_url()
 
+        # Image Buffers
+        self.img_queue = deque(maxlen=16)
         self.last_frame = None
         self.last_frame_qt = None
         self.last_frame_pixmap = None
         self.error_frame = None
         self.error_frame_pixmap = None
+        self.stream_error_img = None
+        self.heatmap = None
+        self.heatmap_overlay = None
+        self.reconstruction_img_pil = None
+        self.heatmap_img = None
+        self.heatmap_overlay_img = None
+        self.stream_error_img_pil = None
 
+        self.stream_grab_flag = False
         self.update_draws_flag = False
         self.reading_frame_flag = False
         self.running_model_flag = False
+        self.new_img_ready_flag = False
 
         self.rec_img = None
         self.rec_pixmap = None
         self.inf_img = None
+        #self.inf_buffer = deque(maxlen=16)
+        self.inf_buffer = None
         self.error_img = None
         self.error_img_pixmap = None
 
@@ -90,7 +141,11 @@ class CameraStreamerMainWindow(QMainWindow):
         self.handle_recording_flag = False
 
         self.process_rate = 0.0
-        self.inference_rate_threshold = 0.25
+        #self.inference_rate_threshold = 0.25
+        self.inference_period_ms = 50
+        self.continuous_learning_period_ms = 500
+        self.last_inference_time = datetime.datetime.now()
+        self.last_continuous_learning_time = datetime.datetime.now()
         self.inference_prev_time = datetime.datetime.now()
         self.disable_inference_flag = False
         self.record_rate_threshold = 0.15
@@ -102,8 +157,19 @@ class CameraStreamerMainWindow(QMainWindow):
         self.stream_error_min = 0.0
         self.stream_error_max = 0.0
         self.stream_error_ma = 0.99
-        self.stream_error_sum_ma = 0.0
-        self.stream_error_sum_2_ma = 1.0
+        self.stream_error_sum_ma = None
+        self.stream_error_sum_2_ma = None
+
+        self.anomaly_score = 0.
+        self.anomaly_score_ma = 0.
+        self.anomaly_score_ma_weight = 0.9
+        self.anomaly_score_sum = 0.
+        self.anomaly_score_sum_2 = 0.
+        self.anomaly_score_mean = 0.
+        self.anomaly_score_std = 0.
+        self.anomaly_score_min = 0.
+        self.anomaly_score_max = 0.
+        self.anomaly_score_map = None
 
         self.setWindowTitle(f"Streaming: {self.rtsp_url}")
 
@@ -114,9 +180,13 @@ class CameraStreamerMainWindow(QMainWindow):
         main_widget = QWidget()
         main_widget.setLayout(layout)
 
+        self.stream_timer = QTimer()
+        self.stream_timer.timeout.connect(self.grab_recent_camera_frame)
+        self.stream_timer.start(50)
+
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_draws)
-        self.update_timer.start(30)
+        self.update_timer.start(50)
 
         self.inference_timer = QTimer()
         self.inference_timer.timeout.connect(self.update_inference_draws)
@@ -201,6 +271,10 @@ class CameraStreamerMainWindow(QMainWindow):
         self.record_btn.clicked.connect(self.record_btn_pressed)
         bottom_layout.addWidget(self.record_btn)
 
+        new_model_btn = QPushButton("New Model")
+        new_model_btn.clicked.connect(self.new_model_btn_pressed)
+        bottom_layout.addWidget(new_model_btn)
+
         load_model_btn = QPushButton("Load Model")
         load_model_btn.clicked.connect(self.load_model_btn_pressed)
         bottom_layout.addWidget(load_model_btn)
@@ -210,10 +284,6 @@ class CameraStreamerMainWindow(QMainWindow):
         self.toggle_inference_btn.setChecked(not self.disable_inference_flag)
         self.toggle_inference_btn.clicked.connect(self.toggle_inference_btn_pressed)
         bottom_layout.addWidget(self.toggle_inference_btn)
-
-        train_model_btn = QPushButton("Train Model")
-        train_model_btn.clicked.connect(self.train_model_btn_pressed)
-        bottom_layout.addWidget(train_model_btn)
 
         self.toggle_cont_learn_btn = QPushButton("Toggle Cont. Learning")
         self.toggle_cont_learn_btn.setCheckable(True)
@@ -254,6 +324,26 @@ class CameraStreamerMainWindow(QMainWindow):
         self.img_noise_exp_sb.setValue(0)
         bottom_layout.addWidget(self.img_noise_exp_sb)
 
+        ma_lbl = QLabel('Stream MA: ')
+        self.stream_ma_dsb = QDoubleSpinBox()
+        self.stream_ma_dsb.setMinimum(0.0)
+        self.stream_ma_dsb.setMaximum(1.0)
+        self.stream_ma_dsb.setSingleStep(0.005)
+        self.stream_ma_dsb.setDecimals(4)
+        self.stream_ma_dsb.setValue(self.stream_error_ma)
+        bottom_layout.addWidget(ma_lbl)
+        bottom_layout.addWidget(self.stream_ma_dsb)
+
+        anomaly_ma_lbl = QLabel('AS MA: ')
+        self.anomaly_ma_dsb = QDoubleSpinBox()
+        self.anomaly_ma_dsb.setMinimum(0.0)
+        self.anomaly_ma_dsb.setMaximum(1.0)
+        self.anomaly_ma_dsb.setSingleStep(0.005)
+        self.anomaly_ma_dsb.setDecimals(4)
+        self.anomaly_ma_dsb.setValue(self.anomaly_score_ma_weight)
+        bottom_layout.addWidget(anomaly_ma_lbl)
+        bottom_layout.addWidget(self.anomaly_ma_dsb)
+
         bottom_layout.addStretch()
 
         main_layout.addLayout(top_layout, 10)
@@ -271,7 +361,8 @@ class CameraStreamerMainWindow(QMainWindow):
         file_menu.addAction("Select &Record Directory...", self.select_record_dir_action)
         
         file_menu.addSeparator()
-        file_menu.addAction('&Save Model to cache', self.schedule_model_save_overide)
+        file_menu.addAction('&Save Model...', self.save_model_to_location)
+        file_menu.addAction('Save Model to cache', self.schedule_model_save_overide)
         
         file_menu.addSeparator()
         file_menu.addAction("E&xit", self.window_exit)
@@ -319,6 +410,59 @@ class CameraStreamerMainWindow(QMainWindow):
             self.begin_recording()
 
 
+    def new_model_btn_pressed(self):
+        print('New Model Pressed')
+
+        # Get New Model Config
+        config_filepath = QFileDialog.getOpenFileName(self, 'Load Configuration File', self.cur_dir, 'YAML (*.yml *.yaml)')
+        config_filepath = config_filepath[0]
+
+        if os.path.exists(config_filepath):
+            if os.path.isfile(config_filepath):
+                config = None
+                model = None
+                try:
+                    config = load_config(config_filepath)
+                    model = FuzzyVAE(config)
+                    model.compile(optimizer=tf.keras.optimizers.Adam(
+                        learning_rate=float(config['training']['learning_rate'])
+                    ))
+                except Exception as e:
+                    print(f'Failed to build model from configuration file: \n{e}')
+                    return
+                self.config = config
+                self.model = model
+
+                lr = float(self.config['training']['learning_rate'])
+                lr_exp = int(np.log10(lr))
+                lr_man = lr / (10**lr_exp)
+                self.learning_rate_dsb.setValue(lr_man)
+                self.learning_rate_exp_sb.setValue(lr_exp)
+
+                try:
+                    if os.path.exists(self.model_cache_dir):
+                        shutil.rmtree(self.model_cache_dir)
+                    os.makedirs(self.model_cache_dir)
+
+                    self.save_model_to_cache()
+                except Exception as e:
+                    print(f'Failed to overwrite model cache: {e}')
+            else:
+                print('Error, selected file is not a file')
+        else:
+            print(f'Error, file does not exist')
+
+        print('New Model Loaded...')
+
+        input_size = self.config['data']['image_size'][:2]
+        if self.inf_img is None:
+            self.inf_img = tf.Variable(self.last_frame, dtype=tf.float32)
+        else:
+            self.inf_img.assign(value=self.last_frame)
+        img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
+        loss, r_img = self.model.train_step_and_run(img)
+
+
     def load_model_btn_pressed(self):
         print('Load Model Pressed')
 
@@ -347,11 +491,14 @@ class CameraStreamerMainWindow(QMainWindow):
                     learning_rate=float(self.config['training']['learning_rate'])
                 ))
 
-                if os.path.exists(self.model_cache_dir):
-                    shutil.rmtree(self.model_cache_dir)
-                os.makedirs(self.model_cache_dir)
+                try:
+                    if os.path.exists(self.model_cache_dir):
+                        shutil.rmtree(self.model_cache_dir)
+                    os.makedirs(self.model_cache_dir)
 
-                self.save_model_to_cache()
+                    self.save_model_to_cache()
+                except Exception as e:
+                    print(f'Failed to overwrite model cache: {e}')
 
             else:
                 print('Error, selected file is not a log directory')
@@ -427,10 +574,39 @@ class CameraStreamerMainWindow(QMainWindow):
     def schedule_model_save_overide(self):
         self.schedule_model_save_flag = True
         self.model_changed_flag = True
+    def save_model_to_location(self):
 
+        if self.model is None:
+            return
 
-    def train_model_btn_pressed(self):
-        print('Train Model Pressed')
+        selected_dir = QFileDialog.getExistingDirectory(self, "Select Model Directory", self.record_dir, QFileDialog.ShowDirsOnly)
+        
+        if os.path.exists(selected_dir):
+            if os.path.isdir(selected_dir):
+                now = datetime.datetime.now()
+                model_dir_path = os.path.join(os.path.abspath(selected_dir), f'date_{datetime.datetime.strftime(now, "%Y%m%d_%H%M%S")}')
+                try:
+                    os.makedirs(model_dir_path)
+                except Exception as e:
+                    print(f'Failed to create directory: {model_dir_path}')
+                    print(e)
+                    return
+
+                try:
+                    self.model.encoder.save(os.path.join(model_dir_path, 'encoder'))
+                except Exception as e:
+                    print(f'Failed to save model to path: {model_dir_path}')
+                    print(e)
+                    return
+                
+                try:
+                    self.model.decoder.save(os.path.join(model_dir_path, 'decoder'))
+                except Exception as e:
+                    print(f'Failed to save decoder to path: {model_dir_path}')
+                    print(e)
+                    return
+
+                print(f'Saved Model to {model_dir_path}')
 
     
     def select_camera_action(self):
@@ -461,6 +637,11 @@ class CameraStreamerMainWindow(QMainWindow):
         start_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         self.record_instance_dir = os.path.join(self.record_dir, f'data_{start_time}')
         os.makedirs(os.path.join(self.record_instance_dir, 'frames'))
+        os.makedirs(os.path.join(self.record_instance_dir, 'err'))
+        os.makedirs(os.path.join(self.record_instance_dir, 'heatmap'))
+        os.makedirs(os.path.join(self.record_instance_dir, 'overlay'))
+        os.makedirs(os.path.join(self.record_instance_dir, 'rec'))
+        self.anomaly_score_map = {}
         print(f'Recording to: {self.record_instance_dir}')
         
         self.recording_flag = True
@@ -497,13 +678,19 @@ class CameraStreamerMainWindow(QMainWindow):
         for idx, img_filepath in tqdm.tqdm(enumerate(img_filelist), desc='Reading images'):
             img = Image.open(img_filepath)
             width, height = img.size
+            img_basename = os.path.split(img_filepath)[1]
             entry = {
                 'id': idx,
                 'width': width,
                 'height': height,
-                'file_name': os.path.split(img_filepath)[1],
+                'file_name': img_basename,
             }
             output_dict['images'].append(entry)
+
+            anomaly_score = self.anomaly_score_map.get(img_basename)
+            if anomaly_score is not None:
+                anomaly_entry = {img_basename: anomaly_score}
+                output_dict['annotations'].append(anomaly_entry)
 
         labels_filename = os.path.join(self.record_instance_dir, 'labels.json')
         print(f'Saving labels to: {labels_filename}')
@@ -548,17 +735,18 @@ class CameraStreamerMainWindow(QMainWindow):
         print(f'Record Delta: {record_delta.total_seconds()}')
         print('*****************************\n')
 
-        QApplication.processEvents()
+        #QApplication.processEvents()
 
         self.update_draws_flag = False
+        self.new_img_ready_flag = False
 
 
-    def update_stream(self):
+    def grab_recent_camera_frame(self):
 
-        if self.reading_frame_flag:
+        if self.stream_grab_flag:
             return
-        self.reading_frame_flag = True
-        
+        self.stream_grab_flag = True
+
         try:
             if self.cap is not None:
                 ret, frame = self.cap.read()
@@ -570,9 +758,30 @@ class CameraStreamerMainWindow(QMainWindow):
                     return
                 
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
+
                 self.last_frame = frame
-                self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(frame))
+                
+                self.img_queue.append(frame)
+
+                self.new_img_ready_flag = True
+
+        except Exception as e:
+            raise e
+        finally:
+            self.stream_grab_flag = False
+
+
+    def update_stream(self):
+
+        if self.reading_frame_flag:
+            return
+        self.reading_frame_flag = True
+        
+        try:
+            if self.new_img_ready_flag:
+
+                last_frame = self.last_frame
+                self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(last_frame))
                 self.last_frame_pixmap = QPixmap.fromImage(self.last_frame_qt).copy()
 
                 w = self.stream_widget.width()
@@ -583,7 +792,7 @@ class CameraStreamerMainWindow(QMainWindow):
                 #self.stream_widget.setScaledContents(True)
                 self.stream_widget.update()
 
-                print(self.cap.get(cv2.CAP_PROP_READ_TIMEOUT_MSEC))
+                #print(self.cap.get(cv2.CAP_PROP_READ_TIMEOUT_MSEC))
                 #print(self.cap.get(cv2.CAP_PROP_POS_MSEC), self.cap.get(cv2.CAP_PROP_BUFFERSIZE))
                 
                 #count = 1
@@ -592,6 +801,8 @@ class CameraStreamerMainWindow(QMainWindow):
                 #    count += 1
                 #    if not ret:
                 #        print('No ret')
+        except Exception as e:
+            raise e
         finally:
             self.reading_frame_flag = False
 
@@ -607,12 +818,40 @@ class CameraStreamerMainWindow(QMainWindow):
 
         try:
             if self.recording_flag:
+                img_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                img_basename = f'{img_time}.png'
+                self.anomaly_score_map[img_basename] = self.anomaly_score
+
+                #img_filename = os.path.join(self.record_instance_dir, 'frames', img_basename)
+
                 if os.path.exists(self.record_instance_dir):
                     if os.path.isdir(self.record_instance_dir):
-                        img = Image.fromarray(self.last_frame)
-                        img_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-                        img_filename = os.path.join(self.record_instance_dir, 'frames', f'{img_time}.png')
-                        img.save(img_filename)
+                        last_frame_img = Image.fromarray(self.last_frame, mode='RGB')
+
+                        filename_list = [
+                            os.path.join(self.record_instance_dir, 'frames', img_basename),
+                            os.path.join(self.record_instance_dir, 'heatmap', img_basename),
+                            os.path.join(self.record_instance_dir, 'overlay', img_basename),
+                            os.path.join(self.record_instance_dir, 'err', img_basename),
+                            os.path.join(self.record_instance_dir, 'rec', img_basename)
+                        ]
+
+                        img_list = [
+                            last_frame_img,
+                            self.heatmap_img,
+                            self.heatmap_overlay_img,
+                            self.stream_error_img_pil,
+                            self.reconstruction_img_pil,
+                        ]
+                        #with Pool(4) as pool:
+                        #    pool.starmap(_m_img_file_save, zip(filename_list, img_list))
+
+                        for f, i in zip(filename_list, img_list):
+                            _m_img_file_save(f, i)
+
+                        #last_frame = self.last_frame
+                        #img = Image.fromarray(last_frame)
+                        #img.save(img_filename)
         except Exception as e:
             print(f'Failed to save image: {e}', file=sys.stderr)
         
@@ -628,8 +867,14 @@ class CameraStreamerMainWindow(QMainWindow):
         if self.model is None:
             return
         
-        if self.process_rate > self.inference_rate_threshold:
+        inference_start_time = datetime.datetime.now()
+        inference_time_delta_ms = (inference_start_time - self.last_inference_time).total_seconds() * 1000.
+
+        if inference_time_delta_ms < self.inference_period_ms:
             return
+        self.last_inference_time = inference_start_time
+        #if self.process_rate > self.inference_rate_threshold:
+        #    return
 
         if self.running_model_flag:
             return
@@ -643,11 +888,29 @@ class CameraStreamerMainWindow(QMainWindow):
             else:
                 self.inf_img.assign(value=self.last_frame)
             img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
+            #self.inf_buffer.append(img[0])
+            
+            if self.inf_buffer is None:
+                self.inf_buffer = DataQueue(img[0], 16)
+            else:
+                self.inf_buffer.append(img[0])
 
-            QApplication.processEvents()
+            #QApplication.processEvents()
+
+            continuous_learning_time = datetime.datetime.now()
+            continuous_learning_delta_ms = (continuous_learning_time - self.last_continuous_learning_time).total_seconds() * 1000.
 
             # If Continuous Learning
-            if self.enable_cont_learning_flag:
+            if self.enable_cont_learning_flag and continuous_learning_delta_ms > self.continuous_learning_period_ms:
+                
+                #if self.inf_buffer is None:
+                #    self.inf_buffer = tf.Variable(list(self.img_queue), dtype=tf.float32)
+                #else:
+                #    self.inf_buffer.assign(value=list(self.img_queue))
+
+                #img = tf.image.resize(self.inf_buffer, input_size, antialias=True) / 255.
+
+                self.last_continuous_learning_time = continuous_learning_time
 
                 lr_mantisa = float(self.learning_rate_dsb.value())
                 lr_exp = int(self.learning_rate_exp_sb.value())
@@ -664,52 +927,93 @@ class CameraStreamerMainWindow(QMainWindow):
 
                 #n_img = img + tf.random.normal(img.shape, 0.0, img_noise)
 
-                loss, r_img = self.model.train_step_and_run(img)
-                r_img = r_img[0]
+                #loss, r_img = self.model.train_step_and_run(np.array(list(self.inf_buffer)))
+                loss, r_img = self.model.train_step_and_run(self.inf_buffer.to_numpy())
+                #r_img = r_img[-1]
+                r_img = r_img[self.inf_buffer._idx]
+
+                #print(f'Loss: {loss}')
 
                 self.model_changed_flag = True
             else:
-                r_img = self.model.call(img, False)[0]
-
-            if self.show_reconstruction_action.isChecked():
-                res_img = tf.cast(tf.round(r_img * 255.), dtype=tf.uint8).numpy()
-                stream_error_img_pil = Image.fromarray(res_img, mode='RGB')
-            else:
-
-                stream_error_img = tf.reduce_sum(tf.math.pow(img[0] - r_img, 2), axis=2)
-                stream_error_min = tf.reduce_min(stream_error_img)
-                stream_error_max = tf.reduce_max(stream_error_img)
-
-                self.stream_error_max = (self.stream_error_ma) * self.stream_error_max + (1.0 - self.stream_error_ma) * stream_error_max
-                self.stream_error_min = (self.stream_error_ma) * self.stream_error_min + (1.0 - self.stream_error_ma) * stream_error_min
-
-                stream_error_img_norm = (stream_error_img - self.stream_error_min) / (self.stream_error_max - self.stream_error_min)
-                stream_error_img = np.round(255. * stream_error_img_norm).astype(np.uint8)
                 
-                stream_error_sum = tf.math.reduce_sum(stream_error_img_norm)
-                self.stream_error_sum_ma = (self.stream_error_ma) * self.stream_error_sum_ma + (1. - self.stream_error_ma) * stream_error_sum
-                self.stream_error_sum_2_ma = (self.stream_error_ma) * self.stream_error_sum_2_ma + (1. - self.stream_error_ma) * tf.math.pow(stream_error_sum, 2)
-                stream_error_sum_var = tf.abs(self.stream_error_sum_2_ma - tf.math.pow(self.stream_error_sum_ma,2))
-                anomaly_score = (stream_error_sum - self.stream_error_sum_ma) / tf.math.sqrt(stream_error_sum_var + 1E-6)
+                r_img = self.model.call(img, False)[-1]
 
-                if self.overlay_heatmap_action.isChecked():
-                    heatmap = cv2.applyColorMap(stream_error_img, cv2.COLORMAP_JET)
-                    print(heatmap.dtype, img.numpy().dtype)
-                    superimpose = cv2.addWeighted(heatmap, 0.5, np.round(255. * img.numpy()[0]).astype(np.uint8), 0.5, 0.0)
-                    stream_error_img_pil = Image.fromarray(superimpose, mode='RGB')
+            QApplication.processEvents()
 
-                else:
-                    if self.draw_jet_action.isChecked():
-                        heatmap = cv2.applyColorMap(stream_error_img, cv2.COLORMAP_JET)
-                        stream_error_img_pil = Image.fromarray(heatmap, mode='RGB')
-                    else:
-                        stream_error_img_pil = Image.fromarray(stream_error_img, mode='L')
+            
+            res_img = tf.cast(tf.round(r_img * 255.), dtype=tf.uint8).numpy()
+            self.reconstruction_img_pil = Image.fromarray(res_img, mode='RGB')
 
-                font_y = tf.shape(r_img).numpy()[0] - 10
-                drawer = ImageDraw.Draw(stream_error_img_pil)
-                drawer.text((10,font_y), f'({anomaly_score:0.4g}, {stream_error_sum:0.4g}, {self.stream_error_sum_ma:0.4g}, {tf.math.sqrt(self.stream_error_sum_2_ma):0.4g})', (255,))
+            self.stream_error_ma = self.stream_ma_dsb.value()
 
-            self.error_frame = ImageQt.ImageQt(stream_error_img_pil)
+            stream_error_raw = tf.reduce_sum(tf.math.pow(img[-1] - r_img, 2), axis=2)
+            stream_error_min = tf.reduce_min(stream_error_raw)
+            stream_error_max = tf.reduce_max(stream_error_raw)
+
+            self.stream_error_max = (self.stream_error_ma) * self.stream_error_max + (1.0 - self.stream_error_ma) * stream_error_max
+            self.stream_error_min = (self.stream_error_ma) * self.stream_error_min + (1.0 - self.stream_error_ma) * stream_error_min
+
+            stream_error_img_norm = (stream_error_raw - self.stream_error_min) / (self.stream_error_max - self.stream_error_min)
+            self.stream_error_img = np.round(255. * stream_error_img_norm).astype(np.uint8)
+            
+            #stream_error_sum = tf.math.reduce_sum(stream_error_raw)
+            stream_error_sum = stream_error_raw * 1.0
+
+            if self.stream_error_sum_ma is None:
+                self.stream_error_sum_ma = stream_error_sum
+            if self.stream_error_sum_2_ma is None:
+                self.stream_error_sum_2_ma = tf.math.pow(stream_error_sum, 2)
+
+            self.stream_error_sum_ma = (self.stream_error_ma) * self.stream_error_sum_ma + (1. - self.stream_error_ma) * stream_error_sum
+            self.stream_error_sum_2_ma = (self.stream_error_ma) * self.stream_error_sum_2_ma + (1. - self.stream_error_ma) * tf.math.pow(stream_error_sum, 2)
+            stream_error_sum_var = tf.abs(self.stream_error_sum_2_ma - tf.math.pow(self.stream_error_sum_ma,2))
+            error_z_scores = (stream_error_sum - self.stream_error_sum_ma) / tf.math.sqrt(stream_error_sum_var + 1E-10)
+
+            error_z_mean = tf.math.reduce_mean(error_z_scores)
+            error_z_std = tf.math.reduce_std(error_z_scores)
+
+            error_z_z_scores = (error_z_scores - error_z_mean) / error_z_std
+            anomaly_count = float(np.sum(error_z_z_scores > 3.0))
+
+            self.anomaly_score_sum = (self.stream_error_ma) * self.anomaly_score_sum + (1.0 - self.stream_error_ma) * anomaly_count
+            self.anomaly_score_sum_2 = (self.stream_error_ma) * self.anomaly_score_sum_2 + (1.0 - self.stream_error_ma) * tf.math.pow(anomaly_count, 2)
+            anomaly_var = (self.anomaly_score_sum_2 - tf.math.pow(self.anomaly_score_sum, 2))
+            self.anomaly_score = float(tf.squeeze((anomaly_count - self.anomaly_score_sum) / tf.math.sqrt(anomaly_var)).numpy())
+
+            as_ma = self.anomaly_ma_dsb.value()
+            anomaly_score_ma = (as_ma) * self.anomaly_score_ma + (1.0 - as_ma) * self.anomaly_score
+            
+            if not np.isnan(anomaly_score_ma):
+                self.anomaly_score_ma = anomaly_score_ma
+
+            # Heatmap Construction
+            self.heatmap = cv2.applyColorMap(self.stream_error_img, cv2.COLORMAP_JET)
+            self.heatmap_overlay = cv2.addWeighted(self.heatmap, 0.5, np.round(255. * img.numpy()[-1]).astype(np.uint8), 0.5, 0.0)
+
+            self.heatmap_img = Image.fromarray(self.heatmap, mode='RGB')
+            self.heatmap_overlay_img = Image.fromarray(self.heatmap_overlay, mode='RGB')
+            self.stream_error_img_pil = Image.fromarray(self.stream_error_img, mode='L')
+
+
+            # Prepare for display to Qt
+            if self.show_reconstruction_action.isChecked():
+                ouput_img_pil = self.reconstruction_img_pil
+            elif self.overlay_heatmap_action.isChecked():
+                ouput_img_pil = self.heatmap_overlay_img
+            elif self.draw_jet_action.isChecked():
+                ouput_img_pil = self.heatmap_img
+            else:
+                ouput_img_pil = self.stream_error_img_pil
+
+            # Over-write Anomaly Score
+            font_y = tf.shape(r_img).numpy()[0] - 10
+            drawer = ImageDraw.Draw(ouput_img_pil)
+            #drawer.text((10,font_y), f'({anomaly_score: 1.4f}, {stream_error_sum:4.4f}, {self.stream_error_sum_ma:4.4f}, {tf.math.sqrt(self.stream_error_sum_2_ma):1.4f}, {stream_error_sum_var:1.4f})', (255,))
+            drawer.text((10,font_y), f'(AS: {self.anomaly_score: 1.4f}, MA: {self.anomaly_score_ma: 1.4f})', (255,))
+
+            # Update Qt Error Stream Dsiplay
+            self.error_frame = ImageQt.ImageQt(ouput_img_pil)
             self.error_frame_pixmap = QPixmap.fromImage(self.error_frame).copy()
 
             w = self.error_label.width()
@@ -719,6 +1023,8 @@ class CameraStreamerMainWindow(QMainWindow):
             self.error_label.setPixmap(self.error_frame_pixmap)
             self.error_label.update()
 
+        except Exception as e:
+            raise e
         finally:
             self.running_model_flag = False
 
@@ -751,7 +1057,11 @@ class CameraStreamerMainWindow(QMainWindow):
 
         QApplication.processEvents()
 
-
+def _m_img_file_save(filename: str, img: Image):
+    if filename is None or img is None:
+        print(f'Failed to save: {filename}')
+    else:
+        img.save(filename)
 
 
 def get_args():
