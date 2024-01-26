@@ -1,29 +1,12 @@
 #!/usr/bin/env python3
 
-import argparse
 import numpy as np
-import matplotlib.pyplot as plt
-import datetime
 
 
 class BSTProb(object):
 
     def __init__(self, x:[list, np.ndarray], probs:[list, np.ndarray], match_fun=lambda a,b: a <= b):
-
         self.reset(x, probs, match_fun)
-        
-        '''
-        self.match_fun = match_fun
-
-        self.x, self.probs = zip(*sorted(zip(x, probs), key=lambda a: a[0]))
-        self.x = np.array(self.x)
-        self.probs = np.array(self.probs)
-
-        assert(len(x) == len(probs))
-        assert(len(x) > 0)
-
-        self._build_tree()
-        '''
 
     def reset(self, x, probs, match_fun=None):
         assert(len(x) == len(probs))
@@ -116,9 +99,6 @@ class CDFObject(object):
 
         self.cdf_tree = BSTProb(x=self.bin_edges[1:], probs=self.cdf)
         self.cdf_tree_inv = BSTProb(x=self.cdf, probs=self.bin_edges[1:])
-
-    #def __getitem__(self, key):
-    #    return self.cdf_tree[key]
         
     def get_prob_by_value(self, x):
         return self.cdf_tree[x]
@@ -129,6 +109,9 @@ class CDFObject(object):
 
 
 def main():
+
+    import argparse
+    import datetime
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--alpha', '-a', type=float, default=2.0, help='Gamma(Alpha, beta)')
@@ -171,22 +154,6 @@ def main():
 
     print(f'Time Delta for 1000 runs: {time_delta} s, {time_delta/1000.} s/frame')
 
-    exit()
-
-    fig, (ax0, ax1) = plt.subplots(2, 1)
-
-    ax0.set_title('Histogram (plt)')
-    ax0.hist(x, bins='auto', density=True)
-    ax0.grid()
-    
-    ax1.set_title('Histogram (np)')
-    ax1.bar(x=bin_mid, height=hist_norm, width=bin_width)
-    ax1.grid()
-    
-
-    plt.show()
-
-
-
 if __name__ == '__main__':
     main()
+    
