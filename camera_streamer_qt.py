@@ -32,7 +32,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.fuzzy_vae import FuzzyVAE
 from src.data_loader import load_data
-from src.load_model import load_model, load_config
+from src.load_model import load_model, load_config, save_config
 
 import tensorflow as tf
 
@@ -479,6 +479,7 @@ class CameraStreamerMainWindow(QMainWindow):
                 
                 self.model = model
                 self.config = config
+
                 self.cur_dir = selected_dir
 
                 lr = float(self.config['training']['learning_rate'])
@@ -583,30 +584,48 @@ class CameraStreamerMainWindow(QMainWindow):
         
         if os.path.exists(selected_dir):
             if os.path.isdir(selected_dir):
-                now = datetime.datetime.now()
-                model_dir_path = os.path.join(os.path.abspath(selected_dir), f'date_{datetime.datetime.strftime(now, "%Y%m%d_%H%M%S")}')
-                try:
-                    os.makedirs(model_dir_path)
-                except Exception as e:
-                    print(f'Failed to create directory: {model_dir_path}')
-                    print(e)
-                    return
+                self.save_model_to_dir(selected_dir)
 
-                try:
-                    self.model.encoder.save(os.path.join(model_dir_path, 'encoder'))
-                except Exception as e:
-                    print(f'Failed to save model to path: {model_dir_path}')
-                    print(e)
-                    return
-                
-                try:
-                    self.model.decoder.save(os.path.join(model_dir_path, 'decoder'))
-                except Exception as e:
-                    print(f'Failed to save decoder to path: {model_dir_path}')
-                    print(e)
-                    return
+    def save_model_to_dir(self, selected_dir: str):
 
-                print(f'Saved Model to {model_dir_path}')
+        if not os.path.exists(selected_dir):
+            os.makedirs(selected_dir, exist_ok=True)
+        if not os.path.isdir(selected_dir):
+            print(f'Error, directory does not exist: {selected_dir}', file=sys.stderr)
+            return None
+        now = datetime.datetime.now()
+        model_dir_path = os.path.join(os.path.abspath(selected_dir), f'date_{datetime.datetime.strftime(now, "%Y%m%d_%H%M%S")}')
+        try:
+            os.makedirs(model_dir_path)
+        except Exception as e:
+            #print(f'Failed to create directory: {model_dir_path}', file=sys.stderr)
+            #print(e)
+            QMessageBox.critical(None, "Model Save Failed", f"Failed to create directory: {model_dir_path}")
+            return None
+
+        try:
+            self.model.encoder.save(os.path.join(model_dir_path, 'encoder'))
+        except Exception as e:
+            #print(f'Failed to save model to path: {model_dir_path}', file=sys.stderr)
+            #print(e)
+            QMessageBox.critical(None, "Model Save Failed", f"Failed to save encoder: {model_dir_path}")
+            return None
+        
+        try:
+            self.model.decoder.save(os.path.join(model_dir_path, 'decoder'))
+        except Exception as e:
+            #print(f'Failed to save decoder to path: {model_dir_path}')
+            #print(e)
+            QMessageBox.critical(None, "Model Save Failed", f"Failed to save decoder: {model_dir_path}")
+            return None
+
+        config_filepath = os.path.join(model_dir_path, 'config.yml')
+        save_config(dict(self.config), config_filepath)
+
+        print(f'Saved Model to {model_dir_path}')
+
+        return model_dir_path
+
 
     
     def select_camera_action(self):
@@ -1037,17 +1056,9 @@ class CameraStreamerMainWindow(QMainWindow):
             return
         
         try:
-            if not os.path.exists(self.model_cache_dir):
-                print(f'Error: model path does not exist: {self.model_cache_dir}', file=sys.stderr)
-                return
-            if not os.path.isdir(self.model_cache_dir):
-                print(f'Error: model path is not a directory: {self.model_cache_dir}', file=sys.stderr)
-                return
 
             print(f'Saving model to: {self.model_cache_dir}')
-
-            self.model.encoder.save(os.path.join(self.model_cache_dir, 'encoder'))
-            self.model.decoder.save(os.path.join(self.model_cache_dir, 'decoder'))
+            self.save_model_to_dir(self.model_cache_dir)
 
         except Exception as e:
             print(e)
