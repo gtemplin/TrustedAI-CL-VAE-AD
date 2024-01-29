@@ -49,6 +49,14 @@ if gpu_list:
 print(f'TensorFlow Version: {tf.__version__}')
 print(f'Num of GPUs: {len(tf.config.list_physical_devices("GPU"))}')
 
+class ImageLabel(QLabel):
+    def paintEvent(self, event):
+        super(ImageLabel, self).paintEvent(event)
+        if self.pixmap():
+            p = QPainter(self)
+            p.drawPixmap(self.rect(), self.pixmap().scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+
 class DataQueue(object):
     # None of the implementations work as expected, so create own queue
     # Instantiate a list of TensorFlow variables of unchanging size
@@ -254,12 +262,12 @@ class CameraStreamerMainWindow(QMainWindow):
         main_layout = QVBoxLayout()
         top_layout = QHBoxLayout()
 
-        self.stream_widget = QLabel()
+        self.stream_widget = ImageLabel()
         self.stream_widget.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
         self.stream_widget.setMinimumSize(0,0)
         top_layout.addWidget(self.stream_widget, 1)
 
-        self.error_label = QLabel()
+        self.error_label = ImageLabel()
         self.error_label.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
         self.error_label.setMinimumSize(0,0)
         top_layout.addWidget(self.error_label, 1)
@@ -803,23 +811,14 @@ class CameraStreamerMainWindow(QMainWindow):
                 self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(last_frame))
                 self.last_frame_pixmap = QPixmap.fromImage(self.last_frame_qt).copy()
 
-                w = self.stream_widget.width()
-                h = self.stream_widget.height()
-                self.last_frame_pixmap = self.last_frame_pixmap.scaled(w,h, Qt.KeepAspectRatio)
+                #w = self.stream_widget.width()
+                #h = self.stream_widget.height()
+                #self.last_frame_pixmap = self.last_frame_pixmap.scaled(w,h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
                 self.stream_widget.setPixmap(self.last_frame_pixmap)
-                #self.stream_widget.setScaledContents(True)
+                self.stream_widget.setScaledContents(True)
                 self.stream_widget.update()
 
-                #print(self.cap.get(cv2.CAP_PROP_READ_TIMEOUT_MSEC))
-                #print(self.cap.get(cv2.CAP_PROP_POS_MSEC), self.cap.get(cv2.CAP_PROP_BUFFERSIZE))
-                
-                #count = 1
-                #while count % 5 != 0 and ret:
-                #    ret = self.cap.grab()
-                #    count += 1
-                #    if not ret:
-                #        print('No ret')
         except Exception as e:
             raise e
         finally:
@@ -1035,11 +1034,12 @@ class CameraStreamerMainWindow(QMainWindow):
             self.error_frame = ImageQt.ImageQt(ouput_img_pil)
             self.error_frame_pixmap = QPixmap.fromImage(self.error_frame).copy()
 
-            w = self.error_label.width()
-            h = self.error_label.height()
-            self.error_frame_pixmap = self.error_frame_pixmap.scaled(w, h, Qt.KeepAspectRatio)
+            #w = self.error_label.width()
+            #h = self.error_label.height()
+            #self.error_frame_pixmap = self.error_frame_pixmap.scaled(w, h, Qt.KeepAspectRatio)
 
             self.error_label.setPixmap(self.error_frame_pixmap)
+            self.error_label.setScaledContents(True)
             self.error_label.update()
 
         except Exception as e:
