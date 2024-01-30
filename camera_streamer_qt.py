@@ -9,6 +9,7 @@ import datetime
 import time
 import shutil
 from collections import deque
+from copy import deepcopy
 
 from multiprocessing import Pool
 from itertools import repeat
@@ -21,7 +22,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap, QPainter
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QSizePolicy,
                              QMenuBar, QMenu, QOpenGLWidget, QLabel, QScrollArea, QFileDialog, QDoubleSpinBox,
-                             QGridLayout, QPushButton, QMessageBox, QAction, QSpinBox)
+                             QGridLayout, QPushButton, QMessageBox, QAction, QActionGroup, QSpinBox)
 
 from PIL import Image, ImageQt, ImageDraw, ImageFont
 
@@ -104,14 +105,16 @@ class CameraStreamerMainWindow(QMainWindow):
         self.schedule_model_save_flag = True
         self.model_changed_flag = True
 
-        self.rtsp_ip = args.rtsp_ip
-        self.rtsp_port = args.rtsp_port
-        self.rtsp_username = args.rtsp_username
-        self.rtsp_password = args.rtsp_password
-        self.rtsp_override = args.rtsp_overide
-        self.rtsp_url = None
+        self.cam_config_filepath = args.cam_config
+        self.cam_config_idx = args.cam_config_index
+        self.cam_config = dict()
+        self.cam_name = None
+        self.cam_url = None
+        self.cam_fps = 20
+        self.load_cam_config()
+
         self.cap = None
-        self.setup_rtsp_url()
+        self.setup_cam_url()
 
         # Image Buffers
         self.img_queue = deque(maxlen=16)
@@ -179,8 +182,6 @@ class CameraStreamerMainWindow(QMainWindow):
         self.anomaly_score_max = 0.
         self.anomaly_score_map = None
 
-        self.setWindowTitle(f"Streaming: {self.rtsp_url}")
-
         self.build_menu()
 
         layout = self.build_layout()
@@ -217,27 +218,56 @@ class CameraStreamerMainWindow(QMainWindow):
             self.cap.release()
             self.cap = None
 
+    def load_cam_config(self):
+        
+        cam_config = load_config(self.cam_config_filepath)
+        
+        assert('camera_list' in cam_config)
+        assert(len(cam_config['camera_list']) > 0)
 
-    def setup_rtsp_url(self):
+        self.cam_config = cam_config
 
-        if self.rtsp_override:
-            self.rtsp_url = self.rtsp_override
-        else:
-            rtsp_url = f"{self.rtsp_ip}:{self.rtsp_port}"
-            if self.rtsp_username is not None and self.rtsp_password is not None:
-                rtsp_url = f"{self.rtsp_username}:{self.rtsp_password}@{rtsp_url}"
-            self.rtsp_url = f"rtsp://{rtsp_url}"
-        print(f'RTSP URL: {self.rtsp_url}')
+
+    def update_selected_camera(self):
+
+        camera_list = self.cam_config['camera_list']
+        assert(self.cam_config_idx < len(camera_list))
+
+        camera_config = camera_list[self.cam_config_idx]
+
+        self.cam_name = camera_config['name']
+        self.cam_url = camera_config['url']
+        self.cam_fps = int(camera_config['fps'])
+
+        # Check if cam_url is a number to load a local video stream
+        # If cam is None, just default load from first webcam on system
+        if not self.cam_url:
+            self.cam_url = 0
+        elif self.cam_url.isdigit():
+            self.cam_url = int(self.cam_url)
+
+        assert(self.cam_fps > 0)
+
+
+    def setup_cam_url(self):
+
+        self.update_selected_camera()
+        self.setWindowTitle(f"Streaming: {self.cam_name}")
+
+        print(f'RTSP URL: {self.cam_url}')
         try:
+
+            if self.cap:
+                self.cap.release()
             
-            self.cap = cv2.VideoCapture(self.rtsp_url)
+            self.cap = cv2.VideoCapture(self.cam_url)
             #self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.video_buffer_size)
             #self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
             self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-            self.cap.set(cv2.CAP_PROP_FPS, 20)
+            self.cap.set(cv2.CAP_PROP_FPS, self.cam_fps)
 
         except Exception as e:
-            print(f'Failed to load RTSP: {self.rtsp_url}', file=sys.stderr)
+            print(f'Failed to load RTSP: {self.cam_url}', file=sys.stderr)
             print(f'Exception: {e}', file=sys.stderr)
             print(type(e))
             exit()
@@ -253,7 +283,7 @@ class CameraStreamerMainWindow(QMainWindow):
             print(f'Waiting {wait_period} seconds')
             time.sleep(wait_period)
             wait_period *= 2
-            self.cap.open(self.rtsp_url)
+            self.cap.open(self.cam_url)
             
         
 
@@ -365,7 +395,7 @@ class CameraStreamerMainWindow(QMainWindow):
         menu = self.menuBar()
 
         file_menu = menu.addMenu("&File")
-        file_menu.addAction("Select &Camera...", self.select_camera_action)
+        self.cam_menu = file_menu.addMenu("Select &Camera...")
         file_menu.addAction("Select &Record Directory...", self.select_record_dir_action)
         
         file_menu.addSeparator()
@@ -385,6 +415,46 @@ class CameraStreamerMainWindow(QMainWindow):
         view_menu.addAction(self.overlay_heatmap_action)
         self.draw_jet_action = QAction('Draw JET', self, checkable=True)
         view_menu.addAction(self.draw_jet_action)
+
+        self.build_select_cam_menu()
+
+    def select_camera_from_idx(self, idx:int):
+        self.cam_config_idx = idx
+        self.update_selected_camera()
+        self.setup_cam_url()
+
+    def get_camera_config_from_idx(self):
+        if self.cam_config:
+            return self.cam_config['camera_list'][self.cam_config_idx]
+        
+    def select_camera_from_name(self, name: str):
+        if self.cam_config:
+            cam_list = self.cam_config['camera_list']
+            for idx, cam_obj in enumerate(cam_list):
+                if cam_obj['name'] == name:
+                    self.select_camera_from_idx(idx)
+                    return True
+        return False
+
+    def build_select_cam_menu(self):
+        
+        self.cam_menu.clear()
+        self.cam_action_group = QActionGroup(self)
+        self.cam_action_group.setExclusionPolicy(QActionGroup.ExclusionPolicy.Exclusive)
+        
+        if self.cam_config:
+            camera_list = self.cam_config['camera_list']
+            for idx,cam_obj in enumerate(camera_list):
+                cam_name = cam_obj['name']
+                action = self.cam_menu.addAction(f'{cam_name}')
+                action.setCheckable(True)
+                if idx == self.cam_config_idx:
+                    action.setChecked(True)
+                self.cam_action_group.addAction(action)
+                action.triggered.connect(lambda checked, index=idx: self.select_camera_from_idx(index))
+
+        else:
+            print('wait a second')
 
 
     def select_record_dir_action(self):
@@ -485,6 +555,25 @@ class CameraStreamerMainWindow(QMainWindow):
                     print(f'Failed to load directory: {e}')
                     return
                 
+                if 'cam_info' in config:
+                    success = self.select_camera_from_name(config['cam_info']['name'])
+                    if not success:
+
+                        cam_name = config['cam_info']['name']
+                        cam_url = config['cam_info']['url']
+
+                        self.toggle_inference_btn.setChecked(False)
+                        msg = QMessageBox()
+                        msg.setIcon(QMessageBox.Warning)
+                        msg.setWindowTitle('Warning: camera not found!')
+                        msg.setText(f'Cam not found:\n - Name: {cam_name}\n - URL: {cam_url}')
+                        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+
+                        retval = msg.exec_()
+
+                        if retval == QMessageBox.Cancel:
+                            return
+
                 self.model = model
                 self.config = config
 
@@ -628,16 +717,15 @@ class CameraStreamerMainWindow(QMainWindow):
             return None
 
         config_filepath = os.path.join(model_dir_path, 'config.yml')
-        save_config(dict(self.config), config_filepath)
+
+        output_config = deepcopy(self.config)
+        output_config['cam_info'] = self.get_camera_config_from_idx()
+
+        save_config(output_config, config_filepath)
 
         print(f'Saved Model to {model_dir_path}')
 
         return model_dir_path
-
-
-    
-    def select_camera_action(self):
-        print('Select Camera')
 
 
     def window_exit(self):
@@ -779,7 +867,7 @@ class CameraStreamerMainWindow(QMainWindow):
                 ret, frame = self.cap.read()
                 if not ret:
                     time_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-                    print(f'{time_str}: Failed to read capture devices: {self.rtsp_url}')
+                    print(f'{time_str}: Failed to read capture devices: {self.cam_url}')
                     self.reading_frame_flag = False
                     self.negotiate_rtsp_connection()
                     return
@@ -1077,14 +1165,23 @@ def _m_img_file_save(filename: str, img: Image):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("rtsp_ip", type=str, help="RTSP Hostname")
-    parser.add_argument("--rtsp-port", "-p", type=int, default=554, help="RTSP Port")
-    parser.add_argument("--rtsp-username", "-u", type=str, default=None, help="RTSP access username")
-    parser.add_argument("--rtsp-password", "-s", type=str, default=None, help="RTSP access password")
-    parser.add_argument("--rtsp-overide", type=str, default=None)
+    #parser.add_argument("rtsp_ip", type=str, help="RTSP Hostname")
+    #parser.add_argument("--rtsp-port", "-p", type=int, default=554, help="RTSP Port")
+    #parser.add_argument("--rtsp-username", "-u", type=str, default=None, help="RTSP access username")
+    #parser.add_argument("--rtsp-password", "-s", type=str, default=None, help="RTSP access password")
+    #parser.add_argument("--rtsp-overide", type=str, default=None)
+    parser.add_argument('cam_config', type=str, help='Path to cam_config.yml')
+    parser.add_argument('--cam-config-index', '-i', type=int, default=0, help='[Optional] Index to load from cam_config.yml (default=0)')
     parser.add_argument("--model-cache-dir", "-d", type=str, default=os.path.join('.', '.model'))
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    assert(os.path.exists(args.cam_config))
+    assert(os.path.isfile(args.cam_config))
+
+    assert(args.cam_config_index >= 0)
+
+    return args
 
 
 if __name__ == '__main__':
