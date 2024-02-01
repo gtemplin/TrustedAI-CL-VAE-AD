@@ -80,6 +80,26 @@ class DataQueue(object):
     def get(self):
         return self._v[self._idx]
     
+class RotatingDeque(object):
+    # Uses Python.collections.deque
+    # Simplifies the calls for a rotating queue
+    # Default behavior of deque is a stack
+    def __init__(self, maxlen=None):
+        self._deque = deque(maxlen=maxlen)
+        self._maxlen = maxlen
+    def append(self, x):
+        self._deque.append(x)
+    def pop(self):
+        return self._deque.popleft()
+    def next(self):
+        if len(self._deque) > 0:
+            return self._deque[0]
+        return None
+    def __len__(self):
+        return len(self._deque)
+    def clear(self):
+        self._deque.clear()
+    
 '''
 Notes
 * We want to have two queues:
@@ -111,13 +131,15 @@ class CameraStreamerMainWindow(QMainWindow):
         self.cam_name = None
         self.cam_url = None
         self.cam_fps = 20
+        self.cam_period_ms = int((1. / self.cam_fps) * 1000.)
         self.load_cam_config()
 
         self.cap = None
         self.setup_cam_url()
 
         # Image Buffers
-        self.img_queue = deque(maxlen=16)
+        self.MAX_IMG_QUEUE = 16
+        self.img_queue = RotatingDeque(maxlen=self.MAX_IMG_QUEUE)
         self.last_frame = None
         self.last_frame_qt = None
         self.last_frame_pixmap = None
@@ -130,6 +152,8 @@ class CameraStreamerMainWindow(QMainWindow):
         self.heatmap_img = None
         self.heatmap_overlay_img = None
         self.stream_error_img_pil = None
+        self.STREAM_PERIOD_MS = 50
+        self.last_stream_update_time = datetime.datetime.now()
 
         self.stream_grab_flag = False
         self.update_draws_flag = False
@@ -141,6 +165,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.rec_pixmap = None
         self.inf_img = None
         #self.inf_buffer = deque(maxlen=16)
+        self.INF_BUFFER_SIZE = 16
         self.inf_buffer = None
         self.error_img = None
         self.error_img_pixmap = None
@@ -191,14 +216,14 @@ class CameraStreamerMainWindow(QMainWindow):
 
         self.stream_timer = QTimer()
         self.stream_timer.timeout.connect(self.grab_recent_camera_frame)
-        self.stream_timer.start(50)
+        self.stream_timer.start(self.cam_period_ms)
 
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_draws)
-        self.update_timer.start(50)
+        self.update_timer.start(self.STREAM_PERIOD_MS)
 
-        self.inference_timer = QTimer()
-        self.inference_timer.timeout.connect(self.update_inference_draws)
+        #self.inference_timer = QTimer()
+        #self.inference_timer.timeout.connect(self.update_inference_draws)
         #self.inference_timer.start(3000)
 
         self.record_timer = QTimer()
@@ -207,7 +232,7 @@ class CameraStreamerMainWindow(QMainWindow):
 
         self.model_save_timer = QTimer()
         self.model_save_timer.timeout.connect(self.schedule_model_save)
-        self.model_save_timer.start(5000)
+        self.model_save_timer.start(5*60*1000)
 
         self.setCentralWidget(main_widget)
         self.resize(1280,480)
@@ -532,12 +557,18 @@ class CameraStreamerMainWindow(QMainWindow):
 
         print('New Model Loaded...')
 
+        #input_size = self.config['data']['image_size'][:2]
+        #if self.inf_img is None:
+        #    self.inf_img = tf.Variable(self.last_frame, dtype=tf.float32)
+        #else:
+        #    self.inf_img.assign(value=self.last_frame)
+        #img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
+        
+        
+        self.inf_img = None
         input_size = self.config['data']['image_size'][:2]
-        if self.inf_img is None:
-            self.inf_img = tf.Variable(self.last_frame, dtype=tf.float32)
-        else:
-            self.inf_img.assign(value=self.last_frame)
-        img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
+        img = tf.image.resize(tf.expand_dims(self.last_frame, axis=0), input_size, antialias=True) / 255.
+        self.inf_buffer = DataQueue(img[0], self.INF_BUFFER_SIZE)
         loss, r_img = self.model.train_step_and_run(img)
 
 
@@ -588,6 +619,11 @@ class CameraStreamerMainWindow(QMainWindow):
                 self.model.compile(optimizer=tf.keras.optimizers.Adam(
                     learning_rate=float(self.config['training']['learning_rate'])
                 ))
+
+                self.inf_img = None
+                input_size = self.config['data']['image_size'][:2]
+                img = tf.image.resize(tf.expand_dims(self.last_frame, axis=0), input_size, antialias=True) / 255.
+                self.inf_buffer = DataQueue(img[0], self.INF_BUFFER_SIZE)
 
                 try:
                     if os.path.exists(self.model_cache_dir):
@@ -874,7 +910,7 @@ class CameraStreamerMainWindow(QMainWindow):
                 
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                self.last_frame = frame
+                #self.last_frame = frame
                 
                 self.img_queue.append(frame)
 
@@ -888,15 +924,22 @@ class CameraStreamerMainWindow(QMainWindow):
 
     def update_stream(self):
 
+        stream_period = (datetime.datetime.now() - self.last_stream_update_time).total_seconds() * 1000.
+        if stream_period < 0.95 * self.STREAM_PERIOD_MS:
+            return
+        self.last_stream_update_time = datetime.datetime.now()
+
         if self.reading_frame_flag:
             return
         self.reading_frame_flag = True
         
         try:
+            if len(self.img_queue) == 0:
+                return
             if self.new_img_ready_flag:
 
-                last_frame = self.last_frame
-                self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(last_frame))
+                self.last_frame = self.img_queue.pop()
+                self.last_frame_qt = ImageQt.ImageQt(Image.fromarray(self.last_frame))
                 self.last_frame_pixmap = QPixmap.fromImage(self.last_frame_qt).copy()
 
                 #w = self.stream_widget.width()
@@ -973,6 +1016,9 @@ class CameraStreamerMainWindow(QMainWindow):
         if self.model is None:
             return
         
+        if self.last_frame is None:
+            return
+        
         inference_start_time = datetime.datetime.now()
         inference_time_delta_ms = (inference_start_time - self.last_inference_time).total_seconds() * 1000.
 
@@ -993,11 +1039,11 @@ class CameraStreamerMainWindow(QMainWindow):
                 self.inf_img = tf.Variable(self.last_frame, dtype=tf.float32)
             else:
                 self.inf_img.assign(value=self.last_frame)
-            img = tf.image.resize(tf.expand_dims(self.inf_img, axis=0), input_size, antialias=True) / 255.
+            img = tf.image.resize(tf.expand_dims(self.last_frame, axis=0), input_size, antialias=True) / 255.
             #self.inf_buffer.append(img[0])
             
             if self.inf_buffer is None:
-                self.inf_buffer = DataQueue(img[0], 16)
+                self.inf_buffer = DataQueue(img[0], self.INF_BUFFER_SIZE)
             else:
                 self.inf_buffer.append(img[0])
 
