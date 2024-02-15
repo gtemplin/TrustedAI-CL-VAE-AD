@@ -140,6 +140,7 @@ class CameraStreamerMainWindow(QMainWindow):
         # Image Buffers
         self.MAX_IMG_QUEUE = 16
         self.img_queue = RotatingDeque(maxlen=self.MAX_IMG_QUEUE)
+        self.replay_buffer = None
         self.last_frame = None
         self.last_frame_qt = None
         self.last_frame_pixmap = None
@@ -164,7 +165,6 @@ class CameraStreamerMainWindow(QMainWindow):
         self.rec_img = None
         self.rec_pixmap = None
         self.inf_img = None
-        #self.inf_buffer = deque(maxlen=16)
         self.INF_BUFFER_SIZE = 16
         self.inf_buffer = None
         self.error_img = None
@@ -426,6 +426,10 @@ class CameraStreamerMainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction('&Save Model...', self.save_model_to_location)
         file_menu.addAction('Save Model to cache', self.schedule_model_save_overide)
+
+        file_menu.addSeparator()
+        file_menu.addAction('&Load Model...', self.load_model_btn_pressed)
+        file_menu.addAction('Load &Replay Buffer...', self.load_replay_buffer)
         
         file_menu.addSeparator()
         file_menu.addAction("E&xit", self.window_exit)
@@ -638,6 +642,101 @@ class CameraStreamerMainWindow(QMainWindow):
                 print('Error, selected file is not a log directory')
         else:
             print(f'Error, directory does not exist')
+
+    def load_replay_buffer(self):
+
+        if not self.config:
+            QMessageBox.critical(None, "Failed to load replay buffer", "Model/Config not loaded yet")
+
+        selected_file_tuple = QFileDialog.getOpenFileName(self, "Select Text File containing image paths", self.cur_dir, "Text File (*.txt);;CSV File (*.csv)")
+        
+        selected_file = selected_file_tuple[0]
+
+        if os.path.isfile(selected_file):
+            self.load_replay_buffer_from_file(selected_file)
+            
+
+    def load_replay_buffer_from_file(self, input_filename: str):
+
+        if not os.path.isfile(input_filename):
+            QMessageBox.warning(None, "Replay Buffer File does not exist", f"Does not exist: {input_filename}")
+            return
+
+        ext = os.path.splitext(input_filename)[-1]
+
+        if ext.lower() == '.txt':
+            self.load_replay_buffer_from_txt_file(input_filename)
+        elif ext.lower() == '.csv':
+            self.load_replay_buffer_from_csv_file(input_filename)
+        else:
+            QMessageBox.warning(None, "Unable to load replay buffer", f"Unrecognized extension: {ext}")
+
+    def load_replay_buffer_from_txt_file(self, input_filename: str):
+
+        if not os.path.isfile(input_filename):
+            QMessageBox.warning(None, "Replay Buffer File does not exist", f"Does not exist: {input_filename}")
+            return
+        
+        data = list()
+        with open(input_filename, 'r') as ifile:
+            data = [row.strip() for row in ifile.readlines()]
+        data = [os.path.normpath(row) for row in data]
+        data = [row for row in data if os.path.isfile(row)]
+
+        self.load_replay_buffer_from_filelist(data)
+
+
+    def load_replay_buffer_from_csv_file(self, input_filename: str):
+
+        if not os.path.isfile(input_filename):
+            QMessageBox.warning(None, "Replay Buffer File does not exist", f"Does not exist: {input_filename}")
+            return
+        
+        import csv
+        
+        data = list()
+        with open(input_filename, 'r') as ifile:
+            reader = csv.reader(ifile)
+            data = [row[0] for row in reader]
+        data = [row for row in data if os.path.isfile(row)]
+
+        self.load_replay_buffer_from_filelist(data)
+
+
+    def load_replay_buffer_from_filelist(self, filelist: list):
+
+
+        replay_buffer = list()
+        failure_list = list()
+        success_list = list()
+
+        input_size = self.config['data']['image_size'][:2]
+
+        for filepath in filelist:
+            try:
+                img = cv2.imread(filepath, cv2.IMREAD_COLOR)
+
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                #img = cv2.resize(img, self.last_frame.shape[:2])
+                img = tf.image.resize(img, input_size, antialias=True) / 255.
+                replay_buffer.append(tf.Variable(img, dtype=tf.float32))
+                success_list.append(filepath)
+
+            except Exception as e:
+                failure_list.append(filepath)
+                raise e
+            
+        if len(success_list) > 0:
+            self.replay_buffer = np.array(replay_buffer)
+        else:
+            QMessageBox.critical(None, "Failed to load replay buffer", "File list empty")
+
+        if len(failure_list) > 0:
+            QMessageBox.warning(None, f"{len(failure_list)} images failed to load", f"{failure_list}")
+
+        print(f'Replay Buffer Loaded: \n{success_list}')
+        QMessageBox.information(None, "Replay Buffer Loaded", f"{len(success_list)} Images Loaded")
+
 
     def combine_datasets_action(self):
         print('Combining Selected Datasets')
@@ -1080,7 +1179,11 @@ class CameraStreamerMainWindow(QMainWindow):
                 #n_img = img + tf.random.normal(img.shape, 0.0, img_noise)
 
                 #loss, r_img = self.model.train_step_and_run(np.array(list(self.inf_buffer)))
-                loss, r_img = self.model.train_step_and_run(self.inf_buffer.to_numpy())
+                if isinstance(self.replay_buffer, np.ndarray):
+                    stacked_buffer = np.vstack((self.inf_buffer.to_numpy(), self.replay_buffer))
+                else:
+                    stacked_buffer = self.inf_buffer.to_numpy()
+                loss, r_img = self.model.train_step_and_run(stacked_buffer)
                 #r_img = r_img[-1]
                 r_img = r_img[self.inf_buffer._idx]
 
