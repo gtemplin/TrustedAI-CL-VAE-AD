@@ -662,7 +662,7 @@ class CameraStreamerMainWindow(QMainWindow):
         if not self.config:
             QMessageBox.critical(None, "Failed to load replay buffer", "Model/Config not loaded yet")
 
-        selected_file_tuple = QFileDialog.getOpenFileName(self, "Select Text File containing image paths", self.cur_dir, "Text File (*.txt);;CSV File (*.csv)")
+        selected_file_tuple = QFileDialog.getOpenFileName(self, "Select Text File containing image paths", self.cur_dir, "CSV File (*.csv);;Text File (*.txt)")
         
         selected_file = selected_file_tuple[0]
 
