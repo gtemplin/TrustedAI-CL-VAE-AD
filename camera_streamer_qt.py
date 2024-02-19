@@ -8,6 +8,7 @@ import json
 import datetime
 import time
 import shutil
+import csv
 from collections import deque
 from copy import deepcopy
 
@@ -142,6 +143,7 @@ class CameraStreamerMainWindow(QMainWindow):
         self.MAX_IMG_QUEUE = 16
         self.img_queue = RotatingDeque(maxlen=self.MAX_IMG_QUEUE)
         self.replay_buffer = None
+        self.replay_buffer_paths = None
         self.last_frame = None
         self.last_frame_qt = None
         self.last_frame_pixmap = None
@@ -628,6 +630,10 @@ class CameraStreamerMainWindow(QMainWindow):
 
                 self.cur_dir = selected_dir
 
+                replay_buffer_path = os.path.join(selected_dir, 'replay_buffer_paths.csv')
+                if os.path.exists(replay_buffer_path):
+                    self.load_replay_buffer_from_file(replay_buffer_path)
+
                 lr = float(self.config['training']['learning_rate'])
                 lr_exp = int(np.log10(lr))
                 lr_man = lr / (10**lr_exp)
@@ -662,7 +668,7 @@ class CameraStreamerMainWindow(QMainWindow):
         if not self.config:
             QMessageBox.critical(None, "Failed to load replay buffer", "Model/Config not loaded yet")
 
-        selected_file_tuple = QFileDialog.getOpenFileName(self, "Select Text File containing image paths", self.cur_dir, "Text File (*.txt);;CSV File (*.csv)")
+        selected_file_tuple = QFileDialog.getOpenFileName(self, "Select Text File containing image paths", self.cur_dir, "CSV File (*.csv);;Text File (*.txt)")
         
         selected_file = selected_file_tuple[0]
 
@@ -706,8 +712,6 @@ class CameraStreamerMainWindow(QMainWindow):
             QMessageBox.warning(None, "Replay Buffer File does not exist", f"Does not exist: {input_filename}")
             return
         
-        import csv
-        
         data = list()
         with open(input_filename, 'r') as ifile:
             reader = csv.reader(ifile)
@@ -734,7 +738,7 @@ class CameraStreamerMainWindow(QMainWindow):
                 #img = cv2.resize(img, self.last_frame.shape[:2])
                 img = tf.image.resize(img, input_size, antialias=True) / 255.
                 replay_buffer.append(tf.Variable(img, dtype=tf.float32))
-                success_list.append(filepath)
+                success_list.append(os.path.abspath(filepath))
 
             except Exception as e:
                 failure_list.append(filepath)
@@ -742,6 +746,7 @@ class CameraStreamerMainWindow(QMainWindow):
             
         if len(success_list) > 0:
             self.replay_buffer = np.array(replay_buffer)
+            self.replay_buffer_paths = success_list
         else:
             QMessageBox.critical(None, "Failed to load replay buffer", "File list empty")
 
@@ -896,6 +901,13 @@ class CameraStreamerMainWindow(QMainWindow):
         output_config['cam_info'] = self.get_camera_config_from_idx()
 
         save_config(output_config, config_filepath)
+
+        if self.replay_buffer_paths:
+            replay_buffer_path = os.path.join(model_dir_path, 'replay_buffer_paths.csv')
+            with open(replay_buffer_path, "w", newline="") as ofile:
+                writer = csv.writer(ofile)
+                for row in self.replay_buffer_paths:
+                    writer.writerow([row,])
 
         print(f'Saved Model to {model_dir_path}')
 
