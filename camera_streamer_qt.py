@@ -36,6 +36,7 @@ from src.data_loader import load_data
 from src.load_model import load_model, load_config, save_config
 
 import tensorflow as tf
+from tensorflow.keras.callbacks import TensorBoard, CallbackList
 
 gpu_list = tf.config.list_physical_devices('GPU')
 # Calling GPUs by default with Keras will reserve the rest of the remaining memory
@@ -155,6 +156,19 @@ class CameraStreamerMainWindow(QMainWindow):
         self.stream_error_img_pil = None
         self.STREAM_PERIOD_MS = 50
         self.last_stream_update_time = datetime.datetime.now()
+
+        # Tensorboard 
+        self.tensorboard_object = TensorBoard(
+            log_dir=os.path.join('logs', f'clfit_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}'), 
+            histogram_freq=0,
+            write_graph=False,
+            write_images=False,
+            update_freq='epoch',
+            embeddings_freq=0,
+        )
+        self.fit_callback_list = None
+        self.cl_epochs = 0
+        self.last_epoch_loss = None
 
         self.stream_grab_flag = False
         self.update_draws_flag = False
@@ -800,6 +814,31 @@ class CameraStreamerMainWindow(QMainWindow):
     def toggle_cont_learn_btn_pressed(self):
         self.enable_cont_learning_flag = not self.enable_cont_learning_flag
         self.toggle_cont_learn_btn.setChecked(self.enable_cont_learning_flag)
+        if self.enable_cont_learning_flag:
+            if not self.model is None:
+                self.cl_epochs = 0
+                self.tensorboard_object = TensorBoard(
+                    log_dir=os.path.join('logs', f'clfit_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}'), 
+                    histogram_freq=0,
+                    write_graph=False,
+                    write_images=False,
+                    update_freq='epoch',
+                    embeddings_freq=0,
+                )
+                self.fit_callback_list = CallbackList(
+                    [self.tensorboard_object,],
+                    add_history=True,
+                    add_progbar=False,
+                    model=self.model,
+                    verbose=False,
+                    epochs = self.cl_epochs,
+                    steps = 1,
+                )
+                self.fit_callback_list.on_train_begin()
+        else:
+            if self.fit_callback_list:
+                self.fit_callback_list.on_train_end(self.last_epoch_loss)
+                self.fit_callback_list = None
 
 
     def schedule_model_save(self):
@@ -1161,6 +1200,10 @@ class CameraStreamerMainWindow(QMainWindow):
 
                 #img = tf.image.resize(self.inf_buffer, input_size, antialias=True) / 255.
 
+                if self.fit_callback_list:
+                    self.fit_callback_list.on_epoch_begin(self.cl_epochs)
+                    self.fit_callback_list.on_batch_begin(1)
+
                 self.last_continuous_learning_time = continuous_learning_time
 
                 lr_mantisa = float(self.learning_rate_dsb.value())
@@ -1188,6 +1231,11 @@ class CameraStreamerMainWindow(QMainWindow):
                 r_img = r_img[self.inf_buffer._idx]
 
                 #print(f'Loss: {loss}')
+                if self.fit_callback_list:
+                    self.fit_callback_list.on_train_batch_end(1, loss)
+                    self.fit_callback_list.on_epoch_end(self.cl_epochs, loss)
+                self.cl_epochs += 1
+                self.last_epoch_loss = loss
 
                 self.model_changed_flag = True
             else:
