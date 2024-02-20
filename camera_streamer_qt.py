@@ -848,9 +848,13 @@ class CameraStreamerMainWindow(QMainWindow):
 
     def schedule_model_save(self):
         self.schedule_model_save_flag = True
+
+
     def schedule_model_save_overide(self):
         self.schedule_model_save_flag = True
         self.model_changed_flag = True
+
+
     def save_model_to_location(self):
 
         if self.model is None:
@@ -860,42 +864,44 @@ class CameraStreamerMainWindow(QMainWindow):
         
         if os.path.exists(selected_dir):
             if os.path.isdir(selected_dir):
-                self.save_model_to_dir(selected_dir)
+                self.save_model_to_dir_by_date(selected_dir)
 
-    def save_model_to_dir(self, selected_dir: str):
 
-        if not os.path.exists(selected_dir):
-            os.makedirs(selected_dir, exist_ok=True)
-        if not os.path.isdir(selected_dir):
-            print(f'Error, directory does not exist: {selected_dir}', file=sys.stderr)
-            return None
+    def save_model_to_dir_by_date(self, model_dir: str):
+        '''Saves model to directory by format selected_dir/date_%Y%m%d_%H%M%S'''
+
         now = datetime.datetime.now()
-        model_dir_path = os.path.join(os.path.abspath(selected_dir), f'date_{datetime.datetime.strftime(now, "%Y%m%d_%H%M%S")}')
+        model_dir_path = os.path.join(os.path.abspath(model_dir), f'date_{datetime.datetime.strftime(now, "%Y%m%d_%H%M%S")}')
+        return self.save_model_to_dir(model_dir_path)
+
+
+    def save_model_to_dir(self, model_dir: str):
+        
         try:
-            os.makedirs(model_dir_path)
+            os.makedirs(model_dir, exist_ok=True)
         except Exception as e:
-            #print(f'Failed to create directory: {model_dir_path}', file=sys.stderr)
+            #print(f'Failed to create directory: {model_dir}', file=sys.stderr)
             #print(e)
-            QMessageBox.critical(None, "Model Save Failed", f"Failed to create directory: {model_dir_path}")
+            QMessageBox.critical(None, "Model Save Failed", f"Failed to create directory: {model_dir}")
             return None
 
         try:
-            self.model.encoder.save(os.path.join(model_dir_path, 'encoder'))
+            self.model.encoder.save(os.path.join(model_dir, 'encoder'))
         except Exception as e:
-            #print(f'Failed to save model to path: {model_dir_path}', file=sys.stderr)
+            #print(f'Failed to save model to path: {model_dir}', file=sys.stderr)
             #print(e)
-            QMessageBox.critical(None, "Model Save Failed", f"Failed to save encoder: {model_dir_path}")
+            QMessageBox.critical(None, "Model Save Failed", f"Failed to save encoder: {model_dir}")
             return None
         
         try:
-            self.model.decoder.save(os.path.join(model_dir_path, 'decoder'))
+            self.model.decoder.save(os.path.join(model_dir, 'decoder'))
         except Exception as e:
-            #print(f'Failed to save decoder to path: {model_dir_path}')
+            #print(f'Failed to save decoder to path: {model_dir}')
             #print(e)
-            QMessageBox.critical(None, "Model Save Failed", f"Failed to save decoder: {model_dir_path}")
+            QMessageBox.critical(None, "Model Save Failed", f"Failed to save decoder: {model_dir}")
             return None
 
-        config_filepath = os.path.join(model_dir_path, 'config.yml')
+        config_filepath = os.path.join(model_dir, 'config.yml')
 
         output_config = deepcopy(self.config)
         output_config['cam_info'] = self.get_camera_config_from_idx()
@@ -903,15 +909,37 @@ class CameraStreamerMainWindow(QMainWindow):
         save_config(output_config, config_filepath)
 
         if self.replay_buffer_paths:
-            replay_buffer_path = os.path.join(model_dir_path, 'replay_buffer_paths.csv')
+            replay_buffer_path = os.path.join(model_dir, 'replay_buffer_paths.csv')
             with open(replay_buffer_path, "w", newline="") as ofile:
                 writer = csv.writer(ofile)
                 for row in self.replay_buffer_paths:
                     writer.writerow([row,])
 
-        print(f'Saved Model to {model_dir_path}')
+        print(f'Saved Model to {model_dir}')
 
-        return model_dir_path
+        return model_dir
+    
+
+    def save_model_to_cache(self):
+        if not self.schedule_model_save_flag:
+            return
+        self.schedule_model_save_flag = False
+        
+        if not self.model_changed_flag:
+            return
+        
+        try:
+
+            print(f'Saving model to: {self.model_cache_dir}')
+            self.save_model_to_dir(self.model_cache_dir)
+
+        except Exception as e:
+            print(e)
+            pass
+        finally:
+            self.model_changed_flag = False
+
+        QApplication.processEvents()
 
 
     def window_exit(self):
@@ -951,13 +979,14 @@ class CameraStreamerMainWindow(QMainWindow):
         print('Terminating recording')
         self.recording_flag = False
 
+        # Ignore cleanup if no recording directory exists
         if not os.path.exists(self.record_instance_dir):
             return
         if not os.path.isdir(self.record_instance_dir):
             return
         
+        # Find all labels in record directory
         img_filelist = list()
-
         for (dirpath, _, filenames) in os.walk(os.path.join(self.record_instance_dir, 'frames')):
             for f in filenames:
                 ext = os.path.splitext(f)[1]
@@ -976,6 +1005,7 @@ class CameraStreamerMainWindow(QMainWindow):
             'annotations': [],
         }
 
+        # Build labels
         for idx, img_filepath in tqdm.tqdm(enumerate(img_filelist), desc='Reading images'):
             img = Image.open(img_filepath)
             width, height = img.size
@@ -993,11 +1023,15 @@ class CameraStreamerMainWindow(QMainWindow):
                 anomaly_entry = {img_basename: anomaly_score}
                 output_dict['annotations'].append(anomaly_entry)
 
+        # Save Labels
         labels_filename = os.path.join(self.record_instance_dir, 'labels.json')
         print(f'Saving labels to: {labels_filename}')
         with open(labels_filename, 'w') as ofile:
             json.dump(output_dict, ofile)
 
+        # Save Model
+        model_dir = os.path.join(self.record_instance_dir, 'model')
+        self.save_model_to_dir(model_dir)
 
 
     def update_draws(self):
@@ -1344,26 +1378,6 @@ class CameraStreamerMainWindow(QMainWindow):
         finally:
             self.running_model_flag = False
 
-    def save_model_to_cache(self):
-        if not self.schedule_model_save_flag:
-            return
-        self.schedule_model_save_flag = False
-        
-        if not self.model_changed_flag:
-            return
-        
-        try:
-
-            print(f'Saving model to: {self.model_cache_dir}')
-            self.save_model_to_dir(self.model_cache_dir)
-
-        except Exception as e:
-            print(e)
-            pass
-        finally:
-            self.model_changed_flag = False
-
-        QApplication.processEvents()
 
 def _m_img_file_save(filename: str, img: Image):
     if filename is None or img is None:
