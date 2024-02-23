@@ -7,6 +7,30 @@ from src.fuzzy_vae import FuzzyVAE
 from copy import deepcopy
 
 
+def import_vae_based_on_type(vae_type: str):
+
+    AVAILABLE_TYPES = [
+        'KLGaussian',
+        'KurtosisGlobal',
+        'KurtosisSingle',
+    ]
+
+    if vae_type is not None:
+        if vae_type not in AVAILABLE_TYPES:
+            raise Exception(f'Error, type {vae_type} not found in available types: {AVAILABLE_TYPES}')
+        
+        if vae_type.lower() == 'klgaussian':
+            raise NotImplementedError('KLGaussian not yet implemented')
+        elif vae_type.lower() == 'kurtosisglobal':
+            from src.fuzzy_vae import FuzzyVAE
+            return FuzzyVAE
+        elif vae_type.lower() == 'kurtosissingle':
+            raise NotImplementedError('KurtosisSingle not yet implemented')
+    else:
+        from src.fuzzy_vae import FuzzyVAE
+        return FuzzyVAE
+
+
 def load_config(config_filename: str):
 
     assert(os.path.exists(config_filename))
@@ -48,7 +72,7 @@ def load_model(log_dir: str):
     config = load_config(config_path)
 
     # NOTE: TensorFlow modifies 'config' for some reason, so here we pass a deepcopy to force non-reference
-    model = FuzzyVAE(deepcopy(config))
+    model = import_vae_based_on_type(config['model'].get('type'))(deepcopy(config))
     model.load_model(log_dir)
 
     return model, config
