@@ -29,12 +29,14 @@ def main():
 
     fig, ax = plt.subplots(1,1)
 
+    fig.suptitle(f'Kurtosis Target: {target_kurtosis}, # Lat. Var.: {num_latent_variables}, Batch Size: {batch_size}')
+
     with tf.device('/CPU:0'):
 
         if args.gaussian_init:
-            x = tf.Variable(tf.random.normal(shape=(batch_size, num_latent_variables), mean=0.0, stddev=1.0, dtype=tf.float32), trainable=True, name='x')
+            x = tf.Variable(tf.random.normal(shape=(batch_size, num_latent_variables), mean=2.*tf.random.normal(shape=(num_latent_variables,)), stddev=1.0, dtype=tf.float32), trainable=True, name='x')
         else:
-            x = tf.Variable(tf.random.uniform(shape=(batch_size, num_latent_variables), minval=0., maxval=1.0, dtype=tf.float32), trainable=True, name='x')
+            x = tf.Variable(tf.random.uniform(shape=(batch_size, num_latent_variables), minval=0.0, maxval=1.0, dtype=tf.float32), trainable=True, name='x')
 
         for epoch in range(num_steps):
             with tf.GradientTape() as tape:
@@ -49,19 +51,20 @@ def main():
 
                 kurtosis_mean = tf.math.reduce_mean(tf.math.pow(kurtosis - target_kurtosis, 2.0))
                 skew_mean = tf.math.reduce_mean(tf.math.pow(skew, 2.0))
-                mean_loss = tf.math.sqrt(tf.reduce_mean(tf.pow(meu, 2)))
+                mean_loss = tf.math.sqrt(tf.reduce_sum(tf.pow(meu, 2)))
 
                 loss = kurtosis_mean + mean_loss + skew_mean
                 
                 print(f'Epoch: {epoch}, Min Kurtosis: {tf.reduce_min(kurtosis):0.6f}, Max Kurtosis: {tf.reduce_max(kurtosis):0.6f}, Mean Kurtosis: {tf.reduce_mean(kurtosis):0.6f}, Mean: {mean_loss:0.6f}, Skew: {skew_mean:0.6f} Loss: {loss:0.6f}')
 
-                ax.clear()
-                for idx in range(num_latent_variables):
-                    ax.hist(x.numpy()[:,idx], bins='auto', label=idx, alpha=0.35, density=True)
-                ax.set_xlabel('Latent Value')
-                ax.set_ylabel('Density')
-                fig.canvas.draw()
-                plt.pause(0.05)
+                if epoch % 20 == 0:
+                    ax.clear()
+                    for idx in range(num_latent_variables):
+                        ax.hist(x.numpy()[:,idx], bins='auto', label=idx, alpha=0.35, density=True)
+                    ax.set_xlabel('Latent Value')
+                    ax.set_ylabel('Density')
+                    fig.canvas.draw()
+                    plt.pause(0.05)
             
             grad = tape.gradient(loss, x)
             x.assign_add(-learning_rate * grad)
