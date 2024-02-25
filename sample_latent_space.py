@@ -6,7 +6,8 @@ import yaml
 import numpy as np
 import matplotlib.pyplot as plt
 
-from src.fuzzy_vae import FuzzyVAE
+from src.abstract_cvae import AbstractCVAE
+from src.load_model import load_model_from_directory
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
@@ -36,40 +37,7 @@ def get_args():
     return parser.parse_args()
 
 
-def load_config(config_filename: str):
-
-    assert(os.path.exists(config_filename))
-    assert(os.path.isfile(config_filename))
-
-    # Load config file
-    config = None
-    try:
-        with open(config_filename, 'r') as ifile:
-            config = yaml.safe_load(ifile)
-
-    except IOError as e:
-        raise e
-    except yaml.YAMLError as e:
-        raise e
-
-    return config 
-
-
-def get_model_config(log_dir:str) -> tuple:
-
-    assert(os.path.exists(log_dir))
-    assert(os.path.isdir(log_dir))
-
-    config_path = os.path.join(log_dir, 'config.yml')
-    config = load_config(config_path)
-
-    model = FuzzyVAE(config)
-    model.load_model(log_dir)
-
-    return model, config
-
-
-def sample_latent_space(config:dict, model: FuzzyVAE, output_filename: str, min_z: float, max_z: float, N:int=10):
+def sample_latent_space(config:dict, model: AbstractCVAE, output_filename: str, min_z: float, max_z: float, N:int=10):
 
     latent_dim = config['model']['latent_dimensions']
     sample_size = (N*N, latent_dim)
@@ -96,7 +64,7 @@ def sample_latent_space(config:dict, model: FuzzyVAE, output_filename: str, min_
 def main():
 
     args = get_args()
-    model, config = get_model_config(args.log_dir)
+    model, config = load_model_from_directory(args.log_dir)
 
     sample_latent_space(config, model, args.output_filename, args.min_z, args.max_z)
 

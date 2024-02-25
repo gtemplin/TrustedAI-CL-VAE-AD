@@ -13,8 +13,8 @@ matplotlib.use('agg')
 import matplotlib.pyplot as plt
 import plotly.express as px
 
-from src.fuzzy_vae import FuzzyVAE
 from src.data_loader import load_data
+from src.load_model import load_model_from_config
 
 gpu_list = tf.config.list_physical_devices('GPU')
 # Calling GPUs by default with Keras will reserve the rest of the remaining memory
@@ -72,7 +72,7 @@ def load_config(config_filename: str):
         raise e
     
     # Assign and create logdir now
-    config['logdir'] =  os.path.join('./logs', f'fit_{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}')
+    config['logdir'] =  os.path.abspath(os.path.join('./logs', f'fit_{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}'))
     if not os.path.exists(config['logdir']):
         os.makedirs(config['logdir'])
     else:
@@ -94,7 +94,9 @@ def load_config(config_filename: str):
 
 def build_model(config: dict, data: tf.data.Dataset):
 
-    vae = FuzzyVAE(config)
+    vae = load_model_from_config(config)
+
+    #vae = FuzzyVAE(config)
 
     vae.compile(optimizer=tf.keras.optimizers.Adam(
         learning_rate=float(config['training']['learning_rate'])

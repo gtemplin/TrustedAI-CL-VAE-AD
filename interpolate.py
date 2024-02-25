@@ -7,7 +7,8 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from src.fuzzy_vae import FuzzyVAE
+from src.abstract_cvae import AbstractCVAE
+from src.load_model import load_model_from_directory
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
@@ -32,41 +33,9 @@ def get_args():
     parser.add_argument('--sample-points', '-k', type=int, default=10, help='Number of samples to walk')
     parser.add_argument('--output-path', '-o', type=str, default='interpolate_output.png')
     return parser.parse_args()
-
-def load_config(config_filename: str):
-
-    assert(os.path.exists(config_filename))
-    assert(os.path.isfile(config_filename))
-
-    # Load config file
-    config = None
-    try:
-        with open(config_filename, 'r') as ifile:
-            config = yaml.safe_load(ifile)
-
-    except IOError as e:
-        raise e
-    except yaml.YAMLError as e:
-        raise e
-
-    return config 
-
-
-def load_model(log_dir: str):
-
-    assert(os.path.exists(log_dir))
-    assert(os.path.isdir(log_dir))
-
-    config_path = os.path.join(log_dir, 'config.yml')
-    config = load_config(config_path)
-
-    model = FuzzyVAE(config)
-    model.load_model(log_dir)
-
-    return model, config
     
 
-def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sample_points:int=10):
+def example_interpolate(config: dict, model: AbstractCVAE, output_path: str, k_sample_points:int=10):
 
     N = 10
 
@@ -144,7 +113,7 @@ def example_interpolate(config: dict, model: FuzzyVAE, output_path: str, k_sampl
 def main():
 
     args = get_args()
-    model, config = load_model(args.log_dir)
+    model, config = load_model_from_directory(args.log_dir)
     example_interpolate(config, model, args.output_path, args.sample_points)
 
 

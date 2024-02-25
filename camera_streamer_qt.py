@@ -32,8 +32,6 @@ matplotlib.use('agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-from src.fuzzy_vae import FuzzyVAE
-from src.data_loader import load_data
 from src.load_model import load_model_from_config_path, load_model_from_directory, load_config, save_config
 
 import tensorflow as tf
@@ -546,8 +544,6 @@ class CameraStreamerMainWindow(QMainWindow):
                 model = None
                 try:
                     model, config = load_model_from_config_path(config_filepath)
-                    #config = load_config(config_filepath)
-                    #model = FuzzyVAE(config)
                     model.compile(optimizer=tf.keras.optimizers.Adam(
                         learning_rate=float(config['training']['learning_rate'])
                     ))

@@ -7,7 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from umap import UMAP
 
-from src.fuzzy_vae import FuzzyVAE
+from src.fuzzy_vae import AbstractCVAE
+from src.data_loader import load_data
+from src.load_model import load_model_from_directory
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
@@ -37,91 +39,7 @@ def get_args():
     return parser.parse_args()
 
 
-def load_config(log_dir: str):
-
-    assert(os.path.exists(log_dir))
-    assert(os.path.isdir(log_dir))
-
-    config_path = os.path.join(log_dir, 'config.yml')
-
-    assert(os.path.exists(config_path))
-    assert(os.path.isfile(config_path))
-
-    config = None
-    try:
-        with open(config_path, 'r') as ifile:
-            config = yaml.safe_load(ifile)
-
-    except IOError as e:
-        raise e
-    except yaml.YAMLError as e:
-        raise e
-
-    return config
-
-def load_data(config: dict):
-
-    batch_size = config['training']['batch_size']
-    dataset_path = config['data'].get('dataset_path')
-    dataset_name = config['data'].get('dataset')
-    train_split = config['data']['train_split']
-    val_split = config['data']['val_split']
-    config_img_size = config['data']['image_size']
-    img_size = (config_img_size[0], config_img_size[1])
-
-
-    if dataset_path is not None:
-        print(f'Loading dataset from: {dataset_path}')
-        assert(os.path.exists(dataset_path))
-        assert(os.path.isdir(dataset_path))
-        
-        train_ds = tf.data.Dataset.load(os.path.join(dataset_path, 'train'))
-        val_ds = tf.data.Dataset.load(os.path.join(dataset_path, 'validation'))
-
-        def normalize_img(element):
-            return tf.cast(element['image'], tf.float32) / 255.
-        
-        train_data = train_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-        val_data = val_ds.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-
-    else:
-
-        train_data = tfds.load(dataset_name, split=train_split, shuffle_files=False)
-        val_data = tfds.load(dataset_name, split=val_split, shuffle_files=False)
-
-        def normalize_img(element):
-            return tf.cast(element['image'], tf.float32) / 255.
-        
-        train_data = train_data.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-        val_data = val_data.map(normalize_img, num_parallel_calls=tf.data.AUTOTUNE)
-    
-    def resize_img(element, img_size):
-        return tf.image.resize(element, size=img_size)
-    
-    train_data = train_data.map(lambda x: resize_img(x, img_size), num_parallel_calls=tf.data.AUTOTUNE)
-    val_data = val_data.map(lambda x: resize_img(x, img_size), num_parallel_calls=tf.data.AUTOTUNE)
-
-    train_data = train_data.batch(batch_size)
-    val_data = val_data.batch(batch_size)
-
-    return {
-        'train': train_data,
-        'val': val_data,
-    }
-
-
-def load_model(log_dir: str, config: dict):
-
-    assert(os.path.exists(log_dir))
-    assert(os.path.isdir(log_dir))
-
-    model = FuzzyVAE(config)
-    model.load_model(log_dir)
-
-    return model
-
-
-def plot_umap(data: dict, model: FuzzyVAE, output_path: str, n_neighbors: int, min_distance=float):
+def plot_umap(data: dict, model: AbstractCVAE, output_path: str, n_neighbors: int, min_distance=float):
 
     z_train = []
     for batch in data['train']:
@@ -152,7 +70,7 @@ def plot_umap(data: dict, model: FuzzyVAE, output_path: str, n_neighbors: int, m
     return umap_model, train_embeddings, val_embeddings
 
 
-def plot_interpolation(model: FuzzyVAE, umap_model: UMAP, train_embeddings: np.ndarray, val_embeddings: np.ndarray, output_filename:str):
+def plot_interpolation(model: AbstractCVAE, umap_model: UMAP, train_embeddings: np.ndarray, val_embeddings: np.ndarray, output_filename:str):
 
     max_values = np.max(train_embeddings, axis=0)
     min_values = np.min(train_embeddings, axis=0)
@@ -186,9 +104,8 @@ def plot_interpolation(model: FuzzyVAE, umap_model: UMAP, train_embeddings: np.n
 def main():
 
     args = get_args()
-    config = load_config(args.log_dir)
+    model, config = load_model_from_directory(args.log_dir)
     data = load_data(config)
-    model = load_model(args.log_dir, config)
     umap_model, train_embeddings, val_embeddings = plot_umap(data, model, args.output_path, args.n_neighbors, args.min_distance)
 
     if args.interpolate:
