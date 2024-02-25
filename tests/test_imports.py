@@ -17,8 +17,8 @@ class TestImports(unittest.TestCase):
         self.assertIsNotNone(np)
 
     def test_fuzzy_vae_import(self):
-        from src.fuzzy_vae import FuzzyVAE
-        self.assertIsNotNone(FuzzyVAE)
+        from src.kurtosis_global_cvae import KurtosisGlobalCVAE
+        self.assertIsNotNone(KurtosisGlobalCVAE)
 
     def test_plotly_import(self):
         import plotly

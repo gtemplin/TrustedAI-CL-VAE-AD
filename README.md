@@ -1,11 +1,11 @@
-# FuzzyVAE - Computer Vision Anomaly Detection
+# Kurtosis CVAE - Computer Vision Anomaly Detection
 
 Author: William M. Boler
 Group: MICV3D / Purdue University, Indianapolis (PUI)
 
 ## Description
 
-This project implements a variational autoencoder using Python, Tensorflow, and Anaconda.  A VAE model is constructed using the `FuzzyVAE` object, which implements a loss function as MSE for image reconstruction, Kurtosis Regularization for latent-space distribution-matching regularization, and L1 error of the latent vector. Gaussian noise is applied to both the input image and the latent space at training time only, and encoder-decoder models use CNN layers. The latent vector is a single dense vector, comprised of a combination of mean and standard deviation vectors approximated by the encoder network.  Code exists for training, evaluating, interpolation/extrapolation, UMAP latent space reduction, decoder generation, anomaly detection, and live-camera streaming.
+This project implements a variational autoencoder using Python, Tensorflow, and Anaconda.  A VAE model is constructed using the `KurtosisGlobalCVAE` object, which implements a loss function as MSE for image reconstruction, Kurtosis Regularization for latent-space distribution-matching regularization, and L1 error of the latent vector. Gaussian noise is applied to both the input image and the latent space at training time only, and encoder-decoder models use CNN layers. The latent vector is a single dense vector, comprised of a combination of mean and standard deviation vectors approximated by the encoder network.  Code exists for training, evaluating, interpolation/extrapolation, UMAP latent space reduction, decoder generation, anomaly detection, and live-camera streaming.
 
 **UNDER CONSTRUCTION**: The repository is highly disorganized at this time, as it mainly started off as a side project to evaluate VAE loss functions under my own repo.  It has since transformed into the primary focus of my research for anomaly detection in video streaming applications.
 

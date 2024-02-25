@@ -2,7 +2,7 @@
 
 import os
 import yaml
-from src.fuzzy_vae import FuzzyVAE
+from src.fuzzy_vae import KurtosisGlobalCVAE
 
 from copy import deepcopy
 
@@ -22,14 +22,14 @@ def import_vae_based_on_type(vae_type: str):
         if vae_type.lower() == 'klgaussian':
             raise NotImplementedError('KLGaussian not yet implemented')
         elif vae_type.lower() == 'kurtosisglobal':
-            from src.fuzzy_vae import FuzzyVAE
-            return FuzzyVAE
+            from src.kurtosis_global_cvae import KurtosisGlobalCVAE
+            return KurtosisGlobalCVAE
         elif vae_type.lower() == 'kurtosissingle':
             from src.kurtosis_single_cvae import KurtosisSingleCVAE
             return KurtosisSingleCVAE
     else:
-        from src.fuzzy_vae import FuzzyVAE
-        return FuzzyVAE
+        from src.kurtosis_global_cvae import KurtosisGlobalCVAE
+        return KurtosisGlobalCVAE
 
 
 def load_config(config_filename: str):

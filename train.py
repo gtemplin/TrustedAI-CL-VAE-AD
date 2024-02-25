@@ -96,8 +96,6 @@ def build_model(config: dict, data: tf.data.Dataset):
 
     vae = load_model_from_config(config)
 
-    #vae = FuzzyVAE(config)
-
     vae.compile(optimizer=tf.keras.optimizers.Adam(
         learning_rate=float(config['training']['learning_rate'])
     ))
