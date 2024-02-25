@@ -32,9 +32,7 @@ matplotlib.use('agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-from src.fuzzy_vae import FuzzyVAE
-from src.data_loader import load_data
-from src.load_model import load_model, load_config, save_config
+from src.load_model import load_model_from_config_path, load_model_from_directory, load_config, save_config
 
 import tensorflow as tf
 from tensorflow.keras.callbacks import TensorBoard, CallbackList
@@ -545,8 +543,7 @@ class CameraStreamerMainWindow(QMainWindow):
                 config = None
                 model = None
                 try:
-                    config = load_config(config_filepath)
-                    model = FuzzyVAE(config)
+                    model, config = load_model_from_config_path(config_filepath)
                     model.compile(optimizer=tf.keras.optimizers.Adam(
                         learning_rate=float(config['training']['learning_rate'])
                     ))
@@ -601,7 +598,7 @@ class CameraStreamerMainWindow(QMainWindow):
         if os.path.exists(selected_dir):
             if os.path.isdir(selected_dir):
                 try:
-                    model, config = load_model(selected_dir)
+                    model, config = load_model_from_directory(selected_dir)
                 except Exception as e:
                     print(f'Failed to load directory: {e}')
                     return

@@ -55,62 +55,62 @@ def get_test_config():
         },
     }
 
-class TestFuzzyVAE(unittest.TestCase):
+class TestKurtosisSingleCVAE(unittest.TestCase):
 
-    def test_import_fuzzy_vae(self):
-        from src.fuzzy_vae import FuzzyVAE
-        self.assertIsNotNone(FuzzyVAE)
+    def test_import_kurtosis_single_cvae(self):
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
+        self.assertIsNotNone(KurtosisSingleCVAE)
 
     def test_dummy_build(self):
 
-        from src.fuzzy_vae import FuzzyVAE
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
 
         config = get_test_config()
-        model = FuzzyVAE(config)
+        model = KurtosisSingleCVAE(config)
         self.assertIsNotNone(model)
 
     def test_encoder_layers(self):
 
-        from src.fuzzy_vae import FuzzyVAE
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
 
         config = get_test_config()
-        model = FuzzyVAE(config)
+        model = KurtosisSingleCVAE(config)
         self.assertEqual(len(config['model']['layers']) + 3, len(model.encoder.layers))
 
 
     def test_decoder_layers(self):
 
-        from src.fuzzy_vae import FuzzyVAE
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
 
         config = get_test_config()
-        model = FuzzyVAE(config)
+        model = KurtosisSingleCVAE(config)
         self.assertEqual(len(config['model']['layers']) + 3, len(model.decoder.layers))
 
     def test_encoder_layers(self):
 
-        from src.fuzzy_vae import FuzzyVAE
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
 
         config = get_test_config()
-        model = FuzzyVAE(config)
+        model = KurtosisSingleCVAE(config)
         latent_output_size = model.encoder.layers[-1].variables[0].shape[0]
         self.assertEqual(config['model']['latent_dimensions'] * 2, latent_output_size)
 
     def test_input_output_shape(self):
 
-        from src.fuzzy_vae import FuzzyVAE
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
 
         config = get_test_config()
-        model = FuzzyVAE(config)
+        model = KurtosisSingleCVAE(config)
         input_shape = list(model.encoder.layers[0].input_shape[1:])
         config_input_shape = list(config['data']['image_size'])
         self.assertListEqual(input_shape, config_input_shape)
 
     def test_encoder_filters(self):
 
-        from src.fuzzy_vae import FuzzyVAE
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
 
         config = get_test_config()
-        model = FuzzyVAE(config)
+        model = KurtosisSingleCVAE(config)
 
         for idx in range(0, len(model.encoder.layers)-3):
             layer = model.encoder.layers[idx]
@@ -125,10 +125,10 @@ class TestFuzzyVAE(unittest.TestCase):
 
     def test_decoder_filters(self):
         
-        from src.fuzzy_vae import FuzzyVAE
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
 
         config = get_test_config()
-        model = FuzzyVAE(config)
+        model = KurtosisSingleCVAE(config)
 
         for idx in range(2, len(model.decoder.layers)-1):
             layer = model.decoder.layers[idx]
@@ -150,27 +150,25 @@ class TestFuzzyVAE(unittest.TestCase):
 
     def test_loss(self):
 
-        from src.fuzzy_vae import FuzzyVAE
+        from src.kurtosis_single_cvae import KurtosisSingleCVAE
 
         exp_loss = {
-            'loss': 0.08541792,
-            'mse': 0.083257124,
-            'z_l1': 0.16079533,
-            'var_loss': 0.9741449,
-            'skew_loss': 0.0, 
-            'z_kurtosis_loss': 2.0, 
-            'r_min': 0.49963754,
-            'r_max': 0.5003504, 
-            'cross_entropy': 6.1276054, 
-            'kl_div': 0.03022772, 
-            'x_std_loss': 0.0,
+            'loss': 0.08444429,
+            'mse': 0.08331857,
+            'z_l1': 0.5309235,
+            'z_l2': 0.760089,
+            'skew_loss': 0.08429436, 
+            'z_kurtosis_loss': 0.36563614, 
+            'r_min': 0.49869165,
+            'r_max': 0.5010713, 
+            'x_std_loss': 0.07809097,
         }
 
         with tf.device('/CPU:0'):
             config = get_test_config()
-            model = FuzzyVAE(config)
+            model = KurtosisSingleCVAE(config)
 
-            x = np.random.random(size= [1, ] + config['data']['image_size']).astype(np.float32)
+            x = np.random.random(size= [16, ] + config['data']['image_size']).astype(np.float32)
             loss = model.compute_loss(x, training=False)
 
             for k,v in loss.items():

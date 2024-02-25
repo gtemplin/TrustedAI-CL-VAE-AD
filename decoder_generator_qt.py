@@ -20,7 +20,7 @@ matplotlib.use('agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-from src.fuzzy_vae import FuzzyVAE
+from src.load_model import load_model_from_directory
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
@@ -154,20 +154,6 @@ class DecoderGeneratorMainWindow(QMainWindow):
         return config 
     
     
-    def load_model_config(self, log_dir:str) -> tuple:
-
-        assert(os.path.exists(log_dir))
-        assert(os.path.isdir(log_dir))
-
-        config_path = os.path.join(log_dir, 'config.yml')
-        config = self.load_config(config_path)
-
-        model = FuzzyVAE(config)
-        model.load_model(log_dir)
-
-        return model, config
-    
-    
     def load_data(self, config:dict):
 
         dataset_path = config['data'].get('dataset_path')
@@ -265,7 +251,7 @@ class DecoderGeneratorMainWindow(QMainWindow):
         if os.path.exists(selected_dir):
             if os.path.isdir(selected_dir):
                 try:
-                    model, config = self.load_model_config(selected_dir)
+                    model, config = load_model_from_directory(selected_dir)
                     train_ds, val_ds = self.load_data(config)
                 except Exception as e:
                     print(f'Failed to load directory: {e}')

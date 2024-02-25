@@ -6,7 +6,7 @@ import numpy as np
 
 from src.abstract_cvae import AbstractCVAE
 
-class FuzzyVAE(AbstractCVAE):
+class KurtosisGlobalCVAE(AbstractCVAE):
 
     def __init__(self, config): #input_shape, latent_size, beta=1E-5):
         super().__init__(config)

@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 
 from PIL import Image
 
-from src.fuzzy_vae import FuzzyVAE
+from src.abstract_cvae import AbstractCVAE
+from src.load_model import load_model_from_directory
 
 import tensorflow as tf
 
@@ -69,43 +70,8 @@ def load_images(args, config:dict):
     return [img_a, img_b, img_c]
 
 
-def load_config(config_filename: str):
 
-    print(f'Loading config from: {config_filename}')
-
-    assert(os.path.exists(config_filename))
-    assert(os.path.isfile(config_filename))
-
-    # Load config file
-    config = None
-    try:
-        with open(config_filename, 'r') as ifile:
-            config = yaml.safe_load(ifile)
-
-    except IOError as e:
-        raise e
-    except yaml.YAMLError as e:
-        raise e
-
-    return config 
-
-def load_model(log_dir: str):
-
-    print(f'Loading model from: {log_dir}')
-
-    assert(os.path.exists(log_dir))
-    assert(os.path.isdir(log_dir))
-
-    config_path = os.path.join(log_dir, 'config.yml')
-    config = load_config(config_path)
-
-    model = FuzzyVAE(config)
-    model.load_model(log_dir)
-
-    return model, config
-
-
-def plot_j_diagram(model: FuzzyVAE, imgs: list, output_filename: str, N:int=11):
+def plot_j_diagram(model: AbstractCVAE, imgs: list, output_filename: str, N:int=11):
 
     # Get z space
     x_hat, z, _, _ = model.call_detailed(tf.convert_to_tensor(imgs), False)
@@ -162,7 +128,7 @@ def plot_j_diagram(model: FuzzyVAE, imgs: list, output_filename: str, N:int=11):
 def main():
 
     args = get_args()
-    model, config = load_model(args.log_dir)
+    model, config = load_model_from_directory(args.log_dir)
     imgs = load_images(args, config)
 
     plot_j_diagram(model, imgs, args.output_filename)

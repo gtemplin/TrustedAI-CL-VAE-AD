@@ -10,9 +10,9 @@ from copy import deepcopy
 import cv2
 from PIL import Image
 
-from src.fuzzy_vae import FuzzyVAE
+from src.abstract_cvae import AbstractCVAE
 from src.data_loader import load_data
-from src.load_model import load_model, load_config
+from src.load_model import load_model_from_directory
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -54,7 +54,7 @@ def get_args():
     os.makedirs(args.output_path, exist_ok=True)
     return args
 
-def get_data_scale(model: FuzzyVAE, config: dict, data: dict):
+def get_data_scale(model: AbstractCVAE, config: dict, data: dict):
 
     err_vec = list()
     for batch in tqdm.tqdm(data['train'], desc='Getting Training Outputs'):
@@ -79,7 +79,7 @@ def get_data_scale(model: FuzzyVAE, config: dict, data: dict):
     }
 
 
-def evaluate_anomalies(model: FuzzyVAE, config: dict, data:dict, data_scale:dict, anomaly_threshold: float):
+def evaluate_anomalies(model: AbstractCVAE, config: dict, data:dict, data_scale:dict, anomaly_threshold: float):
 
     x_rec_vec, err_vec, z_scores, norm_err = list(), list(), list(), list()
     for batch in tqdm.tqdm(data['train'], desc='Evaluate Anomalies'):
