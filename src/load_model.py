@@ -25,7 +25,8 @@ def import_vae_based_on_type(vae_type: str):
             from src.fuzzy_vae import FuzzyVAE
             return FuzzyVAE
         elif vae_type.lower() == 'kurtosissingle':
-            raise NotImplementedError('KurtosisSingle not yet implemented')
+            from src.kurtosis_single_cvae import KurtosisSingleCVAE
+            return KurtosisSingleCVAE
     else:
         from src.fuzzy_vae import FuzzyVAE
         return FuzzyVAE
@@ -62,17 +63,22 @@ def save_config(config: dict, config_filename: str):
         raise e
     
 
+def load_model_from_config_path(config_path: str):
+    assert(os.path.exists(config_path))
+    config = load_config(config_path)
+    return load_model_from_config(config), config
 
-def load_model(log_dir: str):
+def load_model_from_config(config: dict):
+    # NOTE: TensorFlow modifies 'config' for some reason, so here we pass a deepcopy to force non-reference
+    return import_vae_based_on_type(config['model'].get('type'))(deepcopy(config))
+
+def load_model_from_directory(log_dir: str):
 
     assert(os.path.exists(log_dir))
     assert(os.path.isdir(log_dir))
 
     config_path = os.path.join(log_dir, 'config.yml')
-    config = load_config(config_path)
-
-    # NOTE: TensorFlow modifies 'config' for some reason, so here we pass a deepcopy to force non-reference
-    model = import_vae_based_on_type(config['model'].get('type'))(deepcopy(config))
+    model, config = load_model_from_config_path(config_path)
     model.load_model(log_dir)
 
     return model, config
