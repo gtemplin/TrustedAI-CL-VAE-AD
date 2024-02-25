@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from umap import UMAP
 
-from src.fuzzy_vae import AbstractCVAE
+from src.abstract_cvae import AbstractCVAE
 from src.data_loader import load_data
 from src.load_model import load_model_from_directory
 
