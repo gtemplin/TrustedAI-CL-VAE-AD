@@ -1283,7 +1283,9 @@ class CameraStreamerMainWindow(QMainWindow):
                 self.model_changed_flag = True
             else:
                 
-                r_img = self.model.call(img, False)[-1]
+                #r_img = self.model.call(img, False)[-1]
+                loss, r_img = self.model.compute_loss(img, training=False, return_inf=True)
+                r_img = r_img[-1]
 
             QApplication.processEvents()
 
