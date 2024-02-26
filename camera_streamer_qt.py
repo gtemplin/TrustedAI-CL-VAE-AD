@@ -1212,6 +1212,8 @@ class CameraStreamerMainWindow(QMainWindow):
         if self.running_model_flag:
             return
         self.running_model_flag = True
+
+        log_epoch_flag = False
         
         try:
             input_size = self.config['data']['image_size'][:2]
@@ -1273,13 +1275,10 @@ class CameraStreamerMainWindow(QMainWindow):
                 #r_img = r_img[-1]
                 r_img = r_img[self.inf_buffer._idx]
 
-                #print(f'Loss: {loss}')
-                if self.fit_callback_list:
-                    self.fit_callback_list.on_train_batch_end(1, loss)
-                    self.fit_callback_list.on_epoch_end(self.cl_epochs, loss)
                 self.cl_epochs += 1
                 self.last_epoch_loss = loss
 
+                log_epoch_flag = True
                 self.model_changed_flag = True
             else:
                 
@@ -1334,6 +1333,14 @@ class CameraStreamerMainWindow(QMainWindow):
             
             if not np.isnan(anomaly_score_ma):
                 self.anomaly_score_ma = anomaly_score_ma
+
+            if self.fit_callback_list and log_epoch_flag:
+
+                if isinstance(loss, dict):
+                    loss['anomaly_score'] = self.anomaly_score
+                    loss['anomaly_score_ma'] = self.anomaly_score_ma
+                self.fit_callback_list.on_train_batch_end(1, loss)
+                self.fit_callback_list.on_epoch_end(self.cl_epochs, loss)
 
             # Heatmap Construction
             self.heatmap = cv2.applyColorMap(self.stream_error_img, cv2.COLORMAP_JET)
