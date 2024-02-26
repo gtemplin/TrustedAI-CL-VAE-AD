@@ -209,7 +209,7 @@ def main():
     output_path = args.output_path
     anomaly_threshold = args.anomaly_threshold
 
-    model, config = load_model(model_dir)
+    model, config = load_model_from_directory(model_dir)
 
     train_data = load_data(config)
     data_scale = get_data_scale(model, config, train_data)

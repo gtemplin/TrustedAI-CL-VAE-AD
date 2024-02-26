@@ -2,7 +2,6 @@
 
 import os
 import yaml
-from src.fuzzy_vae import KurtosisGlobalCVAE
 
 from copy import deepcopy
 
