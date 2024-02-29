@@ -38,7 +38,7 @@ class KurtosisSingleCVAE(AbstractCVAE):
         # Statistics
         z_meu = tf.math.reduce_mean(z, axis=0)
         z_std = tf.math.reduce_std(z, axis=0)
-        z_score = (z - z_meu) / z_std
+        z_score = tf.math.divide_no_nan((z - z_meu), z_std)
 
         z_skew = tf.reduce_mean(tf.pow(z_score, 3), axis=0)
         z_kurtosis = tf.reduce_mean(tf.pow(z_score, 4), axis=0)
