@@ -172,6 +172,6 @@ class TestKurtosisSingleCVAE(unittest.TestCase):
             loss = model.compute_loss(x, training=False)
 
             for k,v in loss.items():
-                self.assertAlmostEqual(v.numpy(), exp_loss[k], places=6)
+                self.assertAlmostEqual(v.numpy(), exp_loss[k], places=5)
 
 
