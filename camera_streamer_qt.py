@@ -23,7 +23,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap, QPainter
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QSizePolicy,
                              QMenuBar, QMenu, QOpenGLWidget, QLabel, QScrollArea, QFileDialog, QDoubleSpinBox,
-                             QGridLayout, QPushButton, QMessageBox, QAction, QActionGroup, QSpinBox)
+                             QGridLayout, QPushButton, QMessageBox, QAction, QActionGroup, QSpinBox, QCheckBox)
 
 from PIL import Image, ImageQt, ImageDraw, ImageFont
 
@@ -203,6 +203,10 @@ class CameraStreamerMainWindow(QMainWindow):
 
         #self.video_buffer_size = int(3)
 
+        #self.anomaly_settings = None
+        self.anomalous_state = False
+        self.anomalous_start_time = None
+
         # Stream Statistics
         self.stream_error_min = 0.0
         self.stream_error_max = 0.0
@@ -265,6 +269,20 @@ class CameraStreamerMainWindow(QMainWindow):
         assert(len(cam_config['camera_list']) > 0)
 
         self.cam_config = cam_config
+
+        if 'anomaly_settings' in cam_config:
+            self.anomaly_settings = cam_config['anomaly_settings']
+            self.validate_anomaly_settings()
+        else:
+            QMessageBox.warning(None, "Anomaly settings not found", f"'anomaly_settings' not found in cam config file")
+
+
+    def validate_anomaly_settings(self):
+        assert(self.anomaly_settings is not None)
+        assert('anomaly_score_threshold' in self.anomaly_settings)
+        assert('anomaly_score_method' in self.anomaly_settings)
+        assert('buffer_record_period_s' in self.anomaly_settings)
+        assert('anomalous_state_period_s' in self.anomaly_settings)
 
 
     def update_selected_camera(self):
@@ -348,13 +366,27 @@ class CameraStreamerMainWindow(QMainWindow):
         self.record_btn.clicked.connect(self.record_btn_pressed)
         bottom_layout.addWidget(self.record_btn)
 
-        new_model_btn = QPushButton("New Model")
-        new_model_btn.clicked.connect(self.new_model_btn_pressed)
-        bottom_layout.addWidget(new_model_btn)
+        #new_model_btn = QPushButton("New Model")
+        #new_model_btn.clicked.connect(self.new_model_btn_pressed)
+        #bottom_layout.addWidget(new_model_btn)
 
-        load_model_btn = QPushButton("Load Model")
-        load_model_btn.clicked.connect(self.load_model_btn_pressed)
-        bottom_layout.addWidget(load_model_btn)
+        #load_model_btn = QPushButton("Load Model")
+        #load_model_btn.clicked.connect(self.load_model_btn_pressed)
+        #bottom_layout.addWidget(load_model_btn)
+
+        anomaly_state_layout = QVBoxLayout()
+
+        self.anomaly_state_btn = QPushButton("Anomalous State")
+        self.anomaly_state_btn.setCheckable(True)
+        self.anomaly_state_btn.setChecked(False)
+        self.anomaly_state_btn.clicked.connect(self.anomaly_state_btn_pressed)
+        anomaly_state_layout.addWidget(self.anomaly_state_btn)
+
+        self.enable_anomaly_cbx = QCheckBox('Enable')
+        self.enable_anomaly_cbx.setChecked(False)
+        anomaly_state_layout.addWidget(self.enable_anomaly_cbx)
+
+        bottom_layout.addLayout(anomaly_state_layout)
 
         self.toggle_inference_btn = QPushButton("Toggle Inference")
         self.toggle_inference_btn.setCheckable(True)
@@ -436,6 +468,9 @@ class CameraStreamerMainWindow(QMainWindow):
         file_menu = menu.addMenu("&File")
         self.cam_menu = file_menu.addMenu("Select &Camera...")
         file_menu.addAction("Select &Record Directory...", self.select_record_dir_action)
+        
+        file_menu.addSeparator()
+        file_menu.addAction('&New Model...', self.new_model_btn_pressed)
         
         file_menu.addSeparator()
         file_menu.addAction('&Save Model...', self.save_model_to_location)
@@ -529,6 +564,10 @@ class CameraStreamerMainWindow(QMainWindow):
             self.recording_flag = False
         else:
             self.begin_recording()
+
+    def anomaly_state_btn_pressed(self):
+        print('Anomaly State Button Pressed')
+        self.toggle_anomalous_state(self.anomaly_state_btn.isChecked())
 
 
     def new_model_btn_pressed(self):
@@ -843,6 +882,36 @@ class CameraStreamerMainWindow(QMainWindow):
             if self.fit_callback_list:
                 self.fit_callback_list.on_train_end(self.last_epoch_loss)
                 self.fit_callback_list = None
+
+    def toggle_anomalous_state(self, state:bool):
+
+        if self.enable_anomaly_cbx.isChecked():
+            if state and not self.anomalous_state:
+                self.anomalous_start_time = datetime.datetime.now()
+
+            self.anomalous_state = state
+            self.anomaly_state_btn.setChecked(state)
+        else:
+            self.anomalous_state = False
+            self.anomaly_state_btn.setChecked(False)
+
+    def check_anomalous_state(self):
+
+        if self.anomaly_settings is not None:
+            anomaly_score_threshold = float(self.anomaly_settings.get('anomaly_score_threshold'))
+            #print(f'************ Anomalous Threhold: {anomaly_score_threshold} AS: {self.anomaly_score}')
+            if self.anomaly_score > anomaly_score_threshold:
+                self.toggle_anomalous_state(True)
+            else:
+                if self.anomalous_state and self.anomalous_start_time is not None:
+                    anomalous_state_period_s = float(self.anomaly_settings.get('anomalous_state_period_s'))
+                    time_delta_s = (datetime.datetime.now() - self.anomalous_start_time).total_seconds()
+                    if time_delta_s > anomalous_state_period_s:
+                        self.toggle_anomalous_state(False)
+
+        else:
+            # Default to non-anomalous state
+            self.toggle_anomalous_state(False)
 
 
     def schedule_model_save(self):
@@ -1330,6 +1399,8 @@ class CameraStreamerMainWindow(QMainWindow):
             anomaly_var = (self.anomaly_score_sum_2 - tf.math.pow(self.anomaly_score_sum, 2))
             self.anomaly_score = float(tf.squeeze((anomaly_count - self.anomaly_score_sum) / tf.math.sqrt(anomaly_var)).numpy())
 
+            self.check_anomalous_state()
+
             as_ma = self.anomaly_ma_dsb.value()
             anomaly_score_ma = (as_ma) * self.anomaly_score_ma + (1.0 - as_ma) * self.anomaly_score
             
@@ -1367,7 +1438,10 @@ class CameraStreamerMainWindow(QMainWindow):
             font_y = tf.shape(r_img).numpy()[0] - 10
             drawer = ImageDraw.Draw(ouput_img_pil)
             #drawer.text((10,font_y), f'({anomaly_score: 1.4f}, {stream_error_sum:4.4f}, {self.stream_error_sum_ma:4.4f}, {tf.math.sqrt(self.stream_error_sum_2_ma):1.4f}, {stream_error_sum_var:1.4f})', (255,))
-            drawer.text((10,font_y), f'(AS: {self.anomaly_score: 1.4f}, MA: {self.anomaly_score_ma: 1.4f})', (255,))
+            if self.anomalous_state:
+                drawer.text((10,font_y), f'(AS: {self.anomaly_score: 1.4f}, MA: {self.anomaly_score_ma: 1.4f}) **', (255,))
+            else:
+                drawer.text((10,font_y), f'(AS: {self.anomaly_score: 1.4f}, MA: {self.anomaly_score_ma: 1.4f})', (255,))
 
             # Update Qt Error Stream Dsiplay
             self.error_frame = ImageQt.ImageQt(ouput_img_pil)
@@ -1385,6 +1459,7 @@ class CameraStreamerMainWindow(QMainWindow):
             raise e
         finally:
             self.running_model_flag = False
+
 
 
 def _m_img_file_save(filename: str, img: Image):
