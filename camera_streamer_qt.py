@@ -746,9 +746,11 @@ class CameraStreamerMainWindow(QMainWindow):
             self.replay_buffer_paths = success_list
         else:
             QMessageBox.critical(None, "Failed to load replay buffer", "File list empty")
+            return
 
         if len(failure_list) > 0:
             QMessageBox.warning(None, f"{len(failure_list)} images failed to load", f"{failure_list}")
+            return
 
         print(f'Replay Buffer Loaded: \n{success_list}')
         QMessageBox.information(None, "Replay Buffer Loaded", f"{len(success_list)} Images Loaded")
