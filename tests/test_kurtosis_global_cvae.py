@@ -159,6 +159,7 @@ class TestKurtosisGlobalCVAE(unittest.TestCase):
             'var_loss': 0.9741449,
             'skew_loss': 0.0, 
             'z_kurtosis_loss': 2.0, 
+            'z_kurtosis': 1.0,
             'r_min': 0.49963754,
             'r_max': 0.5003504, 
             'cross_entropy': 6.1276054, 

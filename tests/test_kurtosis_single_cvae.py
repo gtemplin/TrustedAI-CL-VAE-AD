@@ -159,6 +159,7 @@ class TestKurtosisSingleCVAE(unittest.TestCase):
             'z_l2': 0.760089,
             'skew_loss': 0.08429436, 
             'z_kurtosis_loss': 0.36563614, 
+            'z_kurtosis': 2.3995433,
             'r_min': 0.49869165,
             'r_max': 0.5010713, 
             'x_std_loss': 0.07809097,
