@@ -97,6 +97,7 @@ class KurtosisGlobalCVAE(AbstractCVAE):
             'var_loss': var_loss,
             'skew_loss': z_skew_loss,
             'z_kurtosis_loss': z_kurtosis_loss,
+            'z_kurtosis': z_kurtosis,
             'r_min': tf.reduce_min(x_hat_prob),
             'r_max': tf.reduce_max(x_hat_prob),
             'cross_entropy': likelihood_cross_entropy,

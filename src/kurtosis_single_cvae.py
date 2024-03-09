@@ -57,7 +57,7 @@ class KurtosisSingleCVAE(AbstractCVAE):
             self.w_mse * mse + \
             self.w_kurtosis * z_kurtosis_loss + \
             self.w_skew * z_skew_loss + \
-            self.w_z_l1_reg * z_l2_reg
+            self.w_z_l1_reg * z_l2_reg #TODO: Change weight name - wmb
 
         d = {
             'loss': loss,
@@ -66,6 +66,7 @@ class KurtosisSingleCVAE(AbstractCVAE):
             'z_l2': z_l2_reg,
             'skew_loss': z_skew_loss,
             'z_kurtosis_loss': z_kurtosis_loss,
+            'z_kurtosis': tf.math.sqrt(tf.math.reduce_mean(tf.math.pow(z_kurtosis, 2))),
             'r_min': tf.reduce_min(x_hat_prob),
             'r_max': tf.reduce_max(x_hat_prob),
             'x_std_loss': x_std_loss,
