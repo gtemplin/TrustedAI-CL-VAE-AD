@@ -8,10 +8,16 @@ from src.raite_loader import RaiteDataset
 
 
 def _normalize_img(element):
-    return tf.cast(element['image'], tf.float32) / 255.
+    return {
+        'image': tf.cast(element['image'], tf.float32) / 255.,
+        'filepath': element['filepath'],
+    }
 
 def _resize_img(element, img_size):
-    return tf.image.resize(element, size=img_size, antialias=True)
+    return {
+        'image': tf.image.resize(element['image'], size=img_size, antialias=True),
+        'filepath': element['filepath'],
+    }
 
 def load_data(config: dict):
 
@@ -46,7 +52,17 @@ def load_data(config: dict):
         rdb.train_data = rdb.train_data.map(lambda x: _resize_img(x, r_img_size), num_parallel_calls=tf.data.AUTOTUNE).cache()
         rdb.test_data = rdb.test_data.map(lambda x: _resize_img(x, r_img_size), num_parallel_calls=tf.data.AUTOTUNE).cache()
 
-        return {'train': rdb.train_data, 'val': rdb.test_data, 'raite_db': rdb}
+        train_data, train_labels = rdb.split_train_data_labels()
+        val_data, val_labels = rdb.split_test_data_labels()
+
+        #return {'train': rdb.train_data, 'val': rdb.test_data, 'raite_db': rdb}
+        return {
+            'train': train_data, 
+            'train_labels': train_labels,
+            'val': val_data, 
+            'val_labels': val_labels,
+            'raite_db': rdb
+        }
 
     if dataset_path is not None:
         print(f'Loading dataset from: {dataset_path}')

@@ -36,15 +36,19 @@ class RaiteDataset(object):
         self.test_dict = self._load_json_data(test_json_path)
 
         #output_signature = (tf.TensorSpec(shape=(None, None, 3), dtype=tf.int8), tf.RaggedTensorSpec(shape=[None, 4], dtype=tf.float32))
-        output_signature = tf.TensorSpec(shape=(None, None, 3), dtype=tf.uint8)
+        #output_signature = tf.TensorSpec(shape=(None, None, 3), dtype=tf.uint8)
+        output_signature = (tf.TensorSpec(shape=(None, None, 3), dtype=tf.uint8, name='image'), tf.TensorSpec(shape=(), dtype=tf.string, name='filepath'))
 
         self.train_data = tf.data.Dataset.from_generator(self._build_tf_data, args=('train',), output_signature=output_signature)
         self.test_data = tf.data.Dataset.from_generator(self._build_tf_data, args=('test', ), output_signature=output_signature)
 
         #def _map_func(img, bbox):
         #    return {'image': img, 'bbox_list': bbox}
-        def _map_func(img):
-            return {'image': img}
+        def _map_func(entry0, entry1):
+            return {
+                'image': entry0,
+                'filepath': entry1,
+                }
 
         self.train_data = self.train_data.map(_map_func, num_parallel_calls=tf.data.AUTOTUNE).batch(batchsize)
         self.test_data = self.test_data.map(_map_func, num_parallel_calls=tf.data.AUTOTUNE).batch(batchsize)
@@ -145,7 +149,19 @@ class RaiteDataset(object):
                 bbox = tf.constant([[-1, -1, -1, -1]], dtype=tf.float32)
 
             #yield img, tf.RaggedTensor.from_tensor(bbox)
-            yield img
+            yield img, img_filepath
+
+    def _split_data_labels(self, db):
+        data = db.map(lambda x: x['image'], num_parallel_calls=tf.data.AUTOTUNE)
+        labels = db.map(lambda x: x['filepath'], num_parallel_calls=tf.data.AUTOTUNE)
+        return data, labels
+    def split_train_data_labels(self):
+        print('Split Train Labels')
+        return self._split_data_labels(self.train_data)
+    def split_test_data_labels(self):
+        print('Split Test Labels')
+        return self._split_data_labels(self.test_data)
+
 
 
 def get_args():
