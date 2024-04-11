@@ -138,15 +138,16 @@ class RaiteDataset(object):
                 continue
 
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            image_id = image_order_to_image_id_map[idx]
-            annotation_ids = image_id_annotation_map[image_id]
-            annotations = [data_dict['annotations'][ann_id] for ann_id in annotation_ids]
-            bbox = tf.constant([row['bbox'] for row in annotations], dtype=tf.float32)
 
-            # Placeholder for empties
-            if len(bbox) == 0:
-                bbox = tf.constant([[-1, -1, -1, -1]], dtype=tf.float32)
+            #TODO: bbox retrieval is incorrect, not robust -wmb
+            #image_id = image_order_to_image_id_map[idx]
+            #annotation_ids = image_id_annotation_map[image_id]
+            #annotations = [data_dict['annotations'][ann_id] for ann_id in annotation_ids]
+            #bbox = tf.constant([row['bbox'] for row in annotations], dtype=tf.float32)
+
+            ## Placeholder for empties
+            #if len(bbox) == 0:
+            #    bbox = tf.constant([[-1, -1, -1, -1]], dtype=tf.float32)
 
             #yield img, tf.RaggedTensor.from_tensor(bbox)
             yield img, img_filepath
